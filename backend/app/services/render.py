@@ -23,7 +23,7 @@ from ..models import Project, RenderJob, VideoClip
 from .video.local import _ffmpeg, ensure_media_dir, render_clip
 from .video.prompts import build_spec
 from .video.providers import PROVIDER_ORDER, get_client
-from .video.quality import evaluate_spec
+from .video.quality import evaluate_clip, evaluate_spec
 from .video.router import route_scene
 
 log = logging.getLogger("cineforge.render")
@@ -118,27 +118,36 @@ class RenderEngine:
                         except KeyError:
                             pass
                     result = client.generate(spec, owner_id=job.owner_id)
-                    if result.get("status") == "ok":
+                    if result.get("status") in ("ok", "mock"):
+                        # "mock" is the offline procedural client — it still
+                        # produced a real file (possibly photoreal-hybrid).
                         clip.status = "completed"
                         clip.file_path = result["file"]
                         clip.thumb_path = result.get("thumb", "")
                         clip.width = result.get("width", 0)
                         clip.height = result.get("height", 0)
                         clip.fps = spec.get("fps", 0)
-                        clip.provider_meta = result.get("provider_meta", {})
-                    else:  # procedural fallback used
-                        clip.status = "completed"
-                        clip.file_path = result.get("file", "")
-                        clip.thumb_path = result.get("thumb", "")
-                        clip.width = result.get("width", 0)
-                        clip.height = result.get("height", 0)
-                        clip.fps = spec.get("fps", 0)
-                        clip.provider_meta = {**result.get("provider_meta", {}), "source": "procedural-fallback"}
+                        meta = {**result.get("provider_meta", {})}
+                        if not meta.get("source"):
+                            meta["source"] = "procedural-fallback"
+                        clip.provider_meta = meta
+                    else:  # no usable output — fail honestly
+                        clip.status = "failed"
+                        clip.error = result.get("error") or result.get("status") or "render produced no file"
+                        clip.provider_meta = {**result.get("provider_meta", {})}
                 except Exception as exc:  # noqa: BLE001
                     log.exception("clip render failed")
                     clip.status = "failed"
                     clip.error = str(exc)[:300]
                 quality = evaluate_spec(spec, spec.get("provider", "kling-3.0"))
+                if clip.status == "completed" and clip.file_path and Path(clip.file_path).exists():
+                    try:
+                        quality = evaluate_clip(
+                            clip.file_path, spec, spec.get("provider", "kling-3.0"),
+                            photo=bool(result.get("provider_meta", {}).get("still", False)),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("clip metrics unavailable (%s) — kept pre-flight estimate", exc)
                 clip.score = quality["overall"]
                 clip.quality = quality
                 clip.started_at = clip.started_at or utcnow()

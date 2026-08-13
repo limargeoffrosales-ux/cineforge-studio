@@ -177,7 +177,11 @@ class ProviderClient:
 
         result = render_clip(spec)
         result["status"] = "mock"
-        result["provider_meta"] = {"note": reason}
+        meta = {**result.get("provider_meta", {})}
+        meta["note"] = reason
+        if not meta.get("source"):
+            meta["source"] = "procedural-fallback"
+        result["provider_meta"] = meta
         return result
 
     # -- live implementations (reference-grade; see provider docs) ----------

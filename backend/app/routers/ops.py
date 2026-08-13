@@ -53,7 +53,7 @@ def _clip_payload(c: "VideoClip") -> dict:
         "file_url": _media_url(c.file_path),
         "thumb_url": _media_url(c.thumb_path),
         "duration_s": c.duration_s, "width": c.width, "height": c.height,
-        "error": c.error, "quality": c.quality,
+        "error": c.error, "quality": c.quality, "provider_meta": c.provider_meta or {},
     }
 
 
@@ -101,6 +101,14 @@ def create_render_job(body: RenderJobIn, user: User = Depends(get_current_user),
     db.commit()
     render_engine.start(j.id)
     audit(db, user.id, "render.enqueue", j.id, {"model": body.model, "resolution": body.resolution})
+    return _job_payload(j, db)
+
+
+@router.get("/render/jobs/{job_id}")
+def get_render_job(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    j = db.get(RenderJob, job_id)
+    if not j or j.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="Job not found.")
     return _job_payload(j, db)
 
 

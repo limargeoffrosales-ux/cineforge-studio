@@ -447,7 +447,7 @@ def compose_2d5(
         cxi = clamp(cxi, wi / 2, CW - wi / 2)
         cyi = clamp(cyi, hi / 2, CH - hi / 2)
         patch = plane.crop((_int(cxi - wi / 2), _int(cyi - hi / 2), _int(cxi + wi / 2), _int(cyi + hi / 2))).resize((W, H))
-        out = Image.alpha_composite(out, patch)
+        out = Image.alpha_composite(out, patch.convert("RGBA"))
     if char_layer is not None:
         pf = PARALLAX[1]
         cxi = cx + (cx - CW / 2) * pf * max(zoom, 0.0) * 1.6
@@ -793,6 +793,50 @@ def render_image_clip(spec: dict, out_dir: Path | None = None) -> dict:
     }
 
 
+# ----------------------------------------------------------------- hybrid
+def _still_planes(img: Image.Image, canvas: tuple[int, int], rng: random.Random) -> tuple[Image.Image, Image.Image, Image.Image]:
+    """Depth planes carved from one photoreal still: far is a re-blurred,
+    darkened witness plane (aerial perspective), mid holds the sharp main
+    action plane, near is the foreground buffer the camera sweeps past."""
+    cw, ch = canvas
+    far_w = max(64, int(cw * 0.55))
+    far = img.resize((far_w, int(ch * far_w / cw)), Image.LANCZOS).resize((cw, ch), Image.BILINEAR)
+    far = far.filter(ImageFilter.GaussianBlur(1.8))
+    far = ImageEnhance.Brightness(far).enhance(0.88)
+    far = ImageEnhance.Color(far).enhance(0.90)
+    far = ImageEnhance.Contrast(far).enhance(0.96)
+
+    mid = cover_fit(img, canvas)
+    mid = ImageEnhance.Sharpness(mid).enhance(1.18)
+    mid = ImageEnhance.Contrast(mid).enhance(1.04)
+
+    near = cover_fit(img, canvas)
+    near = ImageEnhance.Brightness(near).enhance(0.92)
+    near = near.filter(ImageFilter.GaussianBlur(0.6))
+    near_pad = Image.new("RGB", (cw, ch), (10, 10, 14))
+    near = Image.blend(near, near_pad, 0.08)  # keeps near from stealing focus
+    return far, mid, near
+
+
+def make_planes(spec: dict, canvas: tuple[int, int], rng: random.Random) -> tuple:
+    """Hybrid: photoreal stills when the free rail is up, painted planes
+    otherwise. Returns (far, mid, near, still_meta)."""
+    from .stills import fetch_still, get_still_prompt
+
+    still = None
+    still_prompt = get_still_prompt(spec)
+    try:
+        still = fetch_still(still_prompt, spec.get("seed", 7), canvas[0], canvas[1])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("still fetch crashed (%s) — painted planes", exc)
+    if still is not None:
+        return (*_still_planes(still, canvas, rng), {"still": True, "still_model": "flux", "still_prompt": still_prompt})
+    far = paint_far(canvas, spec.get("environment_category", "generic"), spec.get("palette") or ["#2b2b33", "#4a4a55", "#f5b301"], rng)
+    mid = paint_mid(canvas, spec.get("environment_category", "generic"), spec.get("palette") or ["#2b2b33", "#4a4a55", "#f5b301"], rng)
+    near = paint_near(canvas, spec.get("environment_category", "generic"), spec.get("palette") or ["#2b2b33", "#4a4a55", "#f5b301"], rng)
+    return far, mid, near, {"still": False}
+
+
 # ----------------------------------------------------------------- render
 def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
     """Render one clip → mp4 (+ thumbnail jpg). Returns file metadata.
@@ -825,19 +869,29 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
     n = int(dur * fps)
     canvas = (int(W * S_CANVAS), int(H * S_CANVAS))
 
-    # depth planes painted once (parallax done at crop time)
-    far = paint_far(canvas, cat, palette, rng)
-    mid = paint_mid(canvas, cat, palette, rng)
-    near = paint_near(canvas, cat, palette, rng)
+    # depth planes built once (parallax done at crop time) — photoreal
+    # stills when reachable, painted planes offline
+    far, mid, near, still_meta = make_planes(spec, canvas, rng)
 
     # character acting: blink rhythm + speech envelope for narrator beats
     blink_period = 2.6 + rng.uniform(0.0, 2.2)
     spoken_beat = (char.get("action", "") + " " + str(move)).lower() if char else ""
     speaks = any(k in spoken_beat for k in ("narrat", "speak", "talk", "line", "voice", "deliver", "present", "to camera"))
 
-    # overlays live in output space (drawn once, composited per frame)
+    # overlays live in output space (drawn once, composited per frame).
+    # Photoreal planes arrive already graded + lit by the diffusion model —
+    # heavy overlays would crush their dynamic range, so dial them back.
+    photo = bool(still_meta.get("still", False))
+    # composition bias: keep the subject-dense midground in frame during
+    # pushes/trucks (photoreal stills carry their weight lower than painted
+    # skies) — a real framing choice, not a hack.
+    frame_bias_y = 1.10 if photo else 1.0
     light_static = lighting_overlay((W, H), lighting, tod, rng)
     vig = vignette((W, H))
+    if photo:
+        light_static.putalpha(light_static.getchannel("A").point(lambda a: int(a * 0.55)))
+        vig.putalpha(vig.getchannel("A").point(lambda a: int(a * 0.60)))
+    tint_alpha = 13 if photo else 26
 
     tmp = Path(tempfile.mkdtemp(prefix="cfframes_"))
     t0 = _time.time()
@@ -845,6 +899,9 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
         for i in range(n):
             t = i / fps
             cam = camera_window(move, t, dur, W, H, rng)
+            if frame_bias_y != 1.0:
+                cx0, cy0, zoom, rot, p = cam
+                cam = (cx0, min(H * S_CANVAS - H * (1 + zoom) / 2, cy0 * frame_bias_y), zoom, rot, p)
             char_layer = None
             if char:
                 char_layer = Image.new("RGBA", canvas, (0, 0, 0, 0))
@@ -870,7 +927,7 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
             frame = Image.alpha_composite(frame, light_static)
             tint = MOOD_TINTS.get(mood)
             if tint:
-                tint_layer = Image.new("RGBA", (W, H), tint + (26,))
+                tint_layer = Image.new("RGBA", (W, H), tint + (tint_alpha,))
                 frame = Image.alpha_composite(frame, tint_layer)
             frame = Image.alpha_composite(frame, vig)
 
@@ -899,10 +956,11 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
         "fps": fps,
         "style": style,
         "provider_meta": {
-            "source": "procedural-2.5d",
+            "source": "procedural-2.5d" if not still_meta["still"] else "photoreal-hybrid",
             "grade": STYLE_GRADES.get(style, STYLE_GRADES["kling-3.0"])["grade"],
             "parallax": list(PARALLAX),
             "movement": move,
+            **still_meta,
             "rendered_in_s": round(_time.time() - t0, 1),
         },
     }
