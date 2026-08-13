@@ -112,7 +112,7 @@ def test_provider(provider: str, user: User = Depends(get_current_user), db: Ses
                     return {"ok": False, "provider": provider, "detail": f"HTTP {r.status_code} — check the key", "latency_ms": int((time.time() - t0) * 1000)}
                 return {"ok": True, "provider": provider, "detail": "Account reachable", "latency_ms": int((time.time() - t0) * 1000)}
         # video providers: validate shape, full test on first render
-        ok = key.startswith(("AIza", "sk-", "kling", "Bearer ")) or len(key) >= 24
+        ok = key.startswith(("AIza", "sk-", "sk_", "kling", "Bearer ")) or len(key) >= 24
         return {
             "ok": ok,
             "provider": provider,
