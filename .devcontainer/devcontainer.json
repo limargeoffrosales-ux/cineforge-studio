@@ -1,15 +1,11 @@
 {
   "name": "CineForge AI Studio",
   "image": "mcr.microsoft.com/devcontainers/universal:2",
-  "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "version": "latest"
-    }
-  },
   "forwardPorts": [3000, 8000],
   "portsAttributes": {
     "3000": { "label": "CineForge Studio", "onAutoForward": "notify" },
     "8000": { "label": "CineForge API", "onAutoForward": "notify" }
   },
-  "postCreateCommand": "cd ${containerWorkspaceFolder} && docker compose up -d --build && docker compose ps"
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash .devcontainer/serve.sh"
 }
