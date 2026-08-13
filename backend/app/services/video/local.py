@@ -481,5 +481,5 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
         "width": W, "height": H,
         "fps": fps,
         "style": style,
-        "provider_meta": {"source": "procedural", "grade": STYLE_GRADES.get(style, {})["grade"]},
+        "provider_meta": {"source": "procedural", "grade": STYLE_GRADES.get(style, STYLE_GRADES["kling-3.0"])["grade"]},
     }

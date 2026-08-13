@@ -198,8 +198,9 @@ export default function VideoLabPage() {
             <p className="mt-1 max-w-2xl text-sm text-zinc-500">
               The generation engine routes every scene to the frontier model built for it — <b className="text-gold-400">Veo 3.1</b>,{" "}
               <b className="text-gold-400">Runway Gen-4.5</b>, <b className="text-gold-400">Kling 3.0</b>, <b className="text-gold-400">Seedance 2.0</b> —
-              then quality-gates, re-shoots and assembles the director's cut. Cloud keys go in env vars; without them, the built-in
-              procedural renderer produces real playable footage.
+              then quality-gates, re-shoots and assembles the director's cut. Without keys it renders live on the{" "}
+              <b className="text-gold-400">Pollinations</b> free tier (Wan 2.6 / Seedance — paste a free token in Settings), with a built-in
+              procedural renderer as the offline fallback.
             </p>
           </div>
           {benchmark && (
@@ -710,7 +711,7 @@ export default function VideoLabPage() {
                       {uploading ? <Spinner className="h-4 w-4" /> : <ImagePlus className="h-4 w-4" />} {uploading ? "Animating…" : "Generate video"}
                     </Button>
                     <span className="text-[11px] text-zinc-600">
-                      Fully offline — animated with camera moves, lighting grade & film grain. Cloud keys upgrade the look.
+                      Renders live online (Seedance image-to-video) once a free Pollinations token is set in Settings; otherwise animated locally with camera moves, grade & grain.
                     </span>
                   </div>
                 </div>

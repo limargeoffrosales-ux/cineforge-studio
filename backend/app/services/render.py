@@ -109,6 +109,14 @@ class RenderEngine:
                 t0 = time.time()
                 try:
                     client = get_client(spec["provider"])
+                    # online-first: if the routed model has no key, fall through
+                    # to the free live renderer (Pollinations); that in turn
+                    # degrades to the procedural cinematographer offline.
+                    if not client.configured(owner_id=job.owner_id):
+                        try:
+                            client = get_client("pollinations")
+                        except KeyError:
+                            pass
                     result = client.generate(spec, owner_id=job.owner_id)
                     if result.get("status") == "ok":
                         clip.status = "completed"
@@ -180,14 +188,17 @@ class RenderEngine:
         if job.params.get("seed_image"):
             # image → video: animate the uploaded frame with a camera move
             style = job.params.get("style") or "auto"
-            if style not in PROVIDER_ORDER:
-                style = "kling-3.0"
+            if style in PROVIDER_ORDER and get_client(style).configured(job.owner_id):
+                provider = style
+            else:
+                provider = "pollinations"  # live if a free token is set; else procedural
             return [{
                 "job_id": job.id,
                 "clip_id": f"img-{job.id[:6]}",
                 "seed_image": job.params["seed_image"],
+                "seed_image_public": job.params.get("seed_image_public", ""),
                 "prompt": job.params.get("prompt", ""),
-                "provider": style,
+                "provider": provider,
                 "movement": job.params.get("movement", ""),
                 "lighting": job.params.get("lighting", "soft"),
                 "mood": job.params.get("mood", "neutral"),

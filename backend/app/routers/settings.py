@@ -18,6 +18,7 @@ PROVIDER_CATALOG = {
     "runway-gen-4.5": {"kind": "video", "name": "Runway Gen-4.5", "env": "RUNWAY_API_KEY"},
     "kling-3.0": {"kind": "video", "name": "Kling AI 3.0", "env": "KLING_API_KEY"},
     "seedance-2.0": {"kind": "video", "name": "ByteDance Seedance 2.0", "env": "SEEDANCE_API_KEY"},
+    "pollinations": {"kind": "video", "name": "Pollinations Live (free — Wan 2.6 / Seedance)", "env": "POLLINATIONS_API_KEY"},
     "openai": {"kind": "llm", "name": "OpenAI (LLM + TTS)", "env": "OPENAI_API_KEY"},
     "elevenlabs": {"kind": "tts", "name": "ElevenLabs TTS", "env": "ELEVENLABS_API_KEY"},
 }

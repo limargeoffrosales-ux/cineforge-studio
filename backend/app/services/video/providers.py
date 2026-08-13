@@ -91,6 +91,18 @@ PROVIDERS: dict[str, ProviderSpec] = {
         quality={"motion": 0.90, "physics": 0.89, "consistency": 0.92, "aesthetic": 0.90, "adherence": 0.90, "audio": 0.0},
         director_note="The budget+reach play: 30-second takes and bulk renders at a fraction of the cost.",
     ),
+    "pollinations": ProviderSpec(
+        id="pollinations", name="Pollinations Live", vendor="Pollinations.AI",
+        api="gen.pollinations.ai/video — Wan 2.6 (T2V) / Seedance (I2V), free Seed tier",
+        strengths=("free token from auth.pollinations.ai", "real diffusion video (Wan 2.6)", "image-to-video via Seedance", "audio baked into wan output"),
+        weaknesses=("shared-GPU queue waits", "720p ceiling on free tier", "rate-limited (5s between requests)"),
+        max_duration_s=15, max_res="720p", native_audio=True,
+        image_to_video=True, video_to_video=False, last_frame=True,
+        character_consistency="reference", camera_control="prompt",
+        price_per_sec=0.0,
+        quality={"motion": 0.82, "physics": 0.78, "consistency": 0.75, "aesthetic": 0.80, "adherence": 0.85, "audio": 0.9},
+        director_note="The free live renderer — default online path. Paste a free token from auth.pollinations.ai in Settings.",
+    ),
 }
 
 PROVIDER_ORDER = ["veo-3.1", "runway-gen-4.5", "kling-3.0", "seedance-2.0"]
@@ -101,6 +113,7 @@ KEY_ENV: dict[str, str] = {
     "runway-gen-4.5": "RUNWAY_API_KEY",
     "kling-3.0": "KLING_API_KEY",
     "seedance-2.0": "SEEDANCE_API_KEY",
+    "pollinations": "POLLINATIONS_API_KEY",
 }
 
 
@@ -202,30 +215,14 @@ class VeoClient(ProviderClient):
 
                 time.sleep(5)
             video_uri = op.get("response", {}).get("generatedVideos", [{}])[0].get("video", {}).get("uri", "")
-        return self._store_download(video_uri, spec)
+        return self._store_download(video_uri, spec, "veo-3.1")
 
     @staticmethod
-    def _store_download(uri: str, spec: dict) -> dict:
-        import os
+    def _store_download(uri: str, spec: dict, source: str = "veo-3.1") -> dict:
         import urllib.request
 
-        from .local import ensure_media_dir
-
-        out_dir = ensure_media_dir() / "clips" / spec.get("job_id", "standalone")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{spec['clip_id']}.mp4"
-        urllib.request.urlretrieve(uri, path)
-        from PIL import Image
-
-        thumb = out_dir / f"{spec['clip_id']}.jpg"
-        with Image.open(path) as im:
-            im.convert("RGB").save(thumb, quality=82)
-        return {
-            "status": "ok", "file": str(path), "thumb": str(thumb),
-            "duration_s": spec.get("duration_s", 8.0),
-            "width": spec.get("width", 1280), "height": spec.get("height", 720),
-            "provider_meta": {"source": "veo-3.1"},
-        }
+        data = urllib.request.urlopen(uri, timeout=120).read()
+        return _store_bytes(data, spec, source)
 
 
 class RunwayClient(ProviderClient):
@@ -256,7 +253,7 @@ class RunwayClient(ProviderClient):
                 time.sleep(3)
             out = task.get("output", [])
             uri = out[0] if isinstance(out, list) and out else ""
-        return VeoClient._store_download(uri, spec)
+        return VeoClient._store_download(uri, spec, "runway-gen-4.5")
 
 
 class KlingClient(ProviderClient):
@@ -286,7 +283,7 @@ class KlingClient(ProviderClient):
                     break
                 time.sleep(3)
             uri = task["data"].get("task_result", {}).get("videos", [{}])[0].get("url", "")
-        return VeoClient._store_download(uri, spec)
+        return VeoClient._store_download(uri, spec, "kling-3.0")
 
 
 def _kling_camera(movement: str) -> dict:
@@ -336,7 +333,92 @@ class SeedanceClient(ProviderClient):
             if task.get("status") != "succeeded":
                 raise RuntimeError("seedance task failed")
             uri = task["content"]["video_url"]
-        return VeoClient._store_download(uri, spec)
+        return VeoClient._store_download(uri, spec, "seedance-2.0")
+
+
+def _store_bytes(data: bytes, spec: dict, source: str) -> dict:
+    """Persist raw video bytes as a clip + thumbnail."""
+    import io
+
+    from .local import ensure_media_dir
+
+    out_dir = ensure_media_dir() / "clips" / spec.get("job_id", "standalone")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{spec['clip_id']}.mp4"
+    path.write_bytes(data)
+    thumb = out_dir / f"{spec['clip_id']}.jpg"
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as im:
+            im.convert("RGB").save(thumb, quality=82)
+    except Exception:  # noqa: BLE001
+        thumb = None
+    return {
+        "status": "ok", "file": str(path), "thumb": str(thumb or ""),
+        "duration_s": spec.get("duration_s", 8.0),
+        "width": spec.get("width", 1280), "height": spec.get("height", 720),
+        "provider_meta": {"source": source},
+    }
+
+
+class PollinationsClient(ProviderClient):
+    """Free live video generation via gen.pollinations.ai.
+
+    Text-to-video on Wan 2.6; image-to-video via Seedance (the free tier's
+    reliable I2V path). Needs only a free token from auth.pollinations.ai
+    stored as a key (Settings → Pollinations) or POLLINATIONS_API_KEY.
+    Any failure degrades to the built-in procedural renderer."""
+
+    BASE = "https://gen.pollinations.ai/video"
+
+    def configured(self, owner_id: str | None = None) -> bool:
+        return bool(resolve_key("pollinations", owner_id))
+
+    def _generate_live(self, spec: dict) -> dict:
+        from urllib.parse import quote
+
+        import httpx
+
+        key = spec["_api_key"]
+        i2v = bool(spec.get("seed_image_public"))
+        model = "seedance" if i2v else "wan"
+        dur = max(2, min(int(spec.get("duration_s", 5)), 15))
+        if i2v:
+            dur = min(dur, 10)  # seedance ceiling
+        w, h = int(spec.get("width") or 0), int(spec.get("height") or 0)
+        params = {
+            "model": model,
+            "duration": dur,
+            "seed": int(spec.get("seed", 0)),
+            "aspectRatio": "9:16" if (w and h and h > w) else "16:9",
+            "audio": "true",
+        }
+        if w and h:
+            params["width"] = w
+            params["height"] = h
+        prompt = spec["prompt"]
+        move = (spec.get("movement") or "").strip().lower()
+        if move and move not in ("auto", "static", "static lock-off"):
+            prompt = f"{prompt} ({move} camera move)"
+        if i2v:
+            params["image"] = spec["seed_image_public"]
+        url = f"{self.BASE}/{quote(prompt)}"
+        with httpx.Client(timeout=300.0) as client:
+            r = client.get(
+                url,
+                params=params,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "User-Agent": "CineForgeAI/0.1",
+                    "Accept": "video/mp4",
+                },
+            )
+            r.raise_for_status()
+            data = r.content
+        if not data or data[:2] in (b"\xff\xd8", b"\x89P"):
+            raise RuntimeError("provider returned an image instead of a video")
+        return _store_bytes(data, spec, "pollinations")
 
 
 def get_client(provider_id: str) -> ProviderClient:
@@ -350,6 +432,7 @@ def get_client(provider_id: str) -> ProviderClient:
         (PROVIDERS["runway-gen-4.5"], RunwayClient(PROVIDERS["runway-gen-4.5"])),
         (PROVIDERS["kling-3.0"], KlingClient(PROVIDERS["kling-3.0"])),
         (PROVIDERS["seedance-2.0"], SeedanceClient(PROVIDERS["seedance-2.0"])),
+        (PROVIDERS["pollinations"], PollinationsClient(PROVIDERS["pollinations"])),
     )}[provider_id]
 
 

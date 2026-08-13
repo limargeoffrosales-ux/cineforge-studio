@@ -1,5 +1,5 @@
 """Video Generation Engine API — provider registry, benchmark, evaluation."""
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -99,11 +99,14 @@ async def image2video(
     duration_s: float = Form(8.0),
     style: str = Form("auto"),
     movement: str = Form("auto"),
+    request: Request = None,  # type: ignore[assignment]
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Image → video: upload a still, get a playable animated film back.
-    Works fully offline (Ken Burns style animation, grade + grain)."""
+    Renders live online (Seedance image-to-video via Pollinations) when a
+    free token is configured; otherwise the built-in procedural renderer
+    animates it (Ken Burns style, grade + grain)."""
     import io
     import uuid
     from pathlib import Path
@@ -174,7 +177,15 @@ async def image2video(
     up_dir.mkdir(parents=True, exist_ok=True)
     seed_path = up_dir / f"img-{job.id}.jpg"
     img.save(seed_path, quality=92)
-    job.params = {**job.params, "seed_image": str(seed_path)}
+    params = {**job.params, "seed_image": str(seed_path)}
+    # public URL for live I2V providers (they fetch the frame server-side)
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "") if request else ""
+    host = host.split(",")[0].strip()
+    local = "127.0.0.1" in host or "localhost" in host
+    if host and not local:
+        scheme = "https" if request and request.url.scheme == "https" else "http"
+        params["seed_image_public"] = f"{scheme}://{host}/api/backend/media/uploads/{user.id}/img-{job.id}.jpg"
+    job.params = params
     db.commit()
 
     render_engine.start(job.id)
