@@ -43,24 +43,42 @@ def _size() -> tuple[int, int, int]:
 
 
 class RenderEngine:
-    _runs: dict[str, threading.Thread] = {}
-    _lock = threading.Lock()
-
     def is_running(self, job_id: str) -> bool:
-        t = self._runs.get(job_id)
-        return bool(t and t.is_alive())
+        """True while the job is queued or being rendered (survives restarts —
+        backed by the DB, not a thread table)."""
+        db = SessionLocal()
+        try:
+            job = db.get(RenderJob, job_id)
+            return bool(job and job.status in ("queued", "rendering"))
+        finally:
+            db.close()
 
     def start(self, job_id: str) -> bool:
-        with self._lock:
-            if self.is_running(job_id):
+        """Enqueue a render job for the dispatcher. No thread is spawned."""
+        db = SessionLocal()
+        try:
+            job = db.get(RenderJob, job_id)
+            if not job:
                 return False
-            t = threading.Thread(target=self._worker, args=(job_id,), daemon=True)
-            self._runs[job_id] = t
-            t.start()
-        return True
+            if job.status in ("queued", "rendering"):
+                return False
+            job.status = "queued"
+            job.worker_id = None
+            job.last_heartbeat = None
+            job.error = ""
+            db.commit()
+            return True
+        finally:
+            db.close()
 
     # ------------------------------------------------------------- worker
     def _worker(self, job_id: str) -> None:
+        """Render every clip of the job, driven inline by the dispatcher.
+        Resumable: clips already completed (file present) are skipped, so an
+        interrupted job picked up after a restart doesn't re-render finished
+        work. Checks for cancellation before each clip."""
+        from .queue import WORKER_ID, touch  # noqa: PLC0415
+
         db = SessionLocal()
         try:
             job = db.get(RenderJob, job_id)
@@ -70,6 +88,7 @@ class RenderEngine:
             if not project:
                 job.status = "failed"
                 job.error = "project missing"
+                job.finished_at = utcnow()
                 db.commit()
                 return
 
@@ -83,41 +102,73 @@ class RenderEngine:
                 self._broadcast(job.project_id, "render_update", {"job_id": job.id, "status": "completed", "progress": 100})
                 return
 
-            for i, spec in enumerate(specs):
-                clip = VideoClip(
-                    job_id=job.id, project_id=project.id,
-                    scene_id=spec.get("scene_id", "scene-1"),
-                    clip_ref=spec.get("clip_id", f"clip-{i}"),
-                    provider=spec.get("provider", "kling-3.0"),
-                    prompt=spec.get("prompt", ""),
-                    status="queued",
-                    duration_s=spec.get("duration_s", 3.0),
-                )
-                db.add(clip)
-                db.commit()
+            # reconcile clip rows — create missing ones, keep completed ones.
+            clips = db.query(VideoClip).filter(VideoClip.job_id == job.id).order_by(VideoClip.created_at).all()
+            if not clips:
+                for i, spec in enumerate(specs):
+                    clips.append(VideoClip(
+                        job_id=job.id, project_id=project.id,
+                        scene_id=spec.get("scene_id", "scene-1"),
+                        clip_ref=spec.get("clip_id", f"clip-{i}"),
+                        provider=spec.get("provider", "kling-3.0"),
+                        prompt=spec.get("prompt", ""),
+                        status="queued",
+                        duration_s=spec.get("duration_s", 3.0),
+                    ))
+                    db.add(clips[-1])
+                    db.commit()
+            elif len(clips) < total:
+                for i in range(len(clips), total):
+                    spec = specs[i]
+                    clips.append(VideoClip(
+                        job_id=job.id, project_id=project.id,
+                        scene_id=spec.get("scene_id", "scene-1"),
+                        clip_ref=spec.get("clip_id", f"clip-{i}"),
+                        provider=spec.get("provider", "kling-3.0"),
+                        prompt=spec.get("prompt", ""),
+                        status="queued",
+                        duration_s=spec.get("duration_s", 3.0),
+                    ))
+                    db.add(clips[-1])
+                    db.commit()
 
             job.status = "rendering"
+            job.worker_id = WORKER_ID
             job.started_at = job.started_at or utcnow()
+            job.last_heartbeat = utcnow()
             db.commit()
 
-            for i, clip in enumerate(db.query(VideoClip).filter(VideoClip.job_id == job.id).order_by(VideoClip.created_at).all()):
-                spec = specs[i]
-                clip.status = "rendering"
-                db.commit()
-                self._broadcast(job.project_id, "clip_update", {"job_id": job.id, "clip_id": clip.id, "status": "rendering"})
+            for i, clip in enumerate(clips):
+                if job.status == "cancelled":
+                    break
+                spec = specs[i] if i < len(specs) else None
+                if clip.status == "completed" and clip.file_path and Path(clip.file_path).exists():
+                    # resume: already rendered on a previous attempt
+                    continue
+                if clip.status == "queued" or (clip.status == "failed" and (clip.attempts or 0) < 1):
+                    clip.status = "rendering"
+                    clip.error = ""
+                    db.commit()
+                    self._broadcast(job.project_id, "clip_update", {"job_id": job.id, "clip_id": clip.id, "status": "rendering"})
+                    job.last_heartbeat = utcnow()
+                    db.commit()
 
-                t0 = time.time()
-                try:
-                    client = get_client(spec["provider"])
-                    # online-first: if the routed model has no key, fall through
-                    # to the free live renderer (Pollinations); that in turn
-                    # degrades to the procedural cinematographer offline.
-                    if not client.configured(owner_id=job.owner_id):
-                        try:
-                            client = get_client("pollinations")
-                        except KeyError:
-                            pass
-                    result = client.generate(spec, owner_id=job.owner_id)
+                    t0 = time.time()
+                    result = {"status": "failed", "error": "no provider"}
+                    try:
+                        client = get_client(spec["provider"])
+                        # online-first: if the routed model has no key, fall through
+                        # to the free live renderer (Pollinations); that in turn
+                        # degrades to the procedural cinematographer offline.
+                        if not client.configured(owner_id=job.owner_id):
+                            try:
+                                client = get_client("pollinations")
+                            except KeyError:
+                                pass
+                        result = client.generate(spec, owner_id=job.owner_id)
+                    except Exception as exc:  # noqa: BLE001
+                        log.exception("clip render failed")
+                        result = {"status": "failed", "error": str(exc)[:300]}
                     if result.get("status") in ("ok", "mock"):
                         # "mock" is the offline procedural client — it still
                         # produced a real file (possibly photoreal-hybrid).
@@ -135,41 +186,53 @@ class RenderEngine:
                         clip.status = "failed"
                         clip.error = result.get("error") or result.get("status") or "render produced no file"
                         clip.provider_meta = {**result.get("provider_meta", {})}
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("clip render failed")
-                    clip.status = "failed"
-                    clip.error = str(exc)[:300]
-                quality = evaluate_spec(spec, spec.get("provider", "kling-3.0"))
-                if clip.status == "completed" and clip.file_path and Path(clip.file_path).exists():
-                    try:
-                        quality = evaluate_clip(
-                            clip.file_path, spec, spec.get("provider", "kling-3.0"),
-                            photo=bool(result.get("provider_meta", {}).get("still", False)),
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.debug("clip metrics unavailable (%s) — kept pre-flight estimate", exc)
-                clip.score = quality["overall"]
-                clip.quality = quality
-                clip.started_at = clip.started_at or utcnow()
-                clip.completed_at = utcnow()
-                db.commit()
+                    clip.attempts = (clip.attempts or 0) + 1
 
-                job.progress = round((i + 1) / total * 100, 1)
+                    quality = evaluate_spec(spec, spec.get("provider", "kling-3.0"))
+                    if clip.status == "completed" and clip.file_path and Path(clip.file_path).exists():
+                        try:
+                            quality = evaluate_clip(
+                                clip.file_path, spec, spec.get("provider", "kling-3.0"),
+                                photo=bool(result.get("provider_meta", {}).get("still", False)),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            log.debug("clip metrics unavailable (%s) — kept pre-flight estimate", exc)
+                    clip.score = quality["overall"]
+                    clip.quality = quality
+                    clip.started_at = clip.started_at or utcnow()
+                    clip.completed_at = utcnow()
+                    db.commit()
+
+                    job.progress = round((i + 1) / total * 100, 1)
+                    job.last_heartbeat = utcnow()
+                    db.commit()
+                    self._broadcast(job.project_id, "render_update", {"job_id": job.id, "status": "rendering", "progress": job.progress, "clip_id": clip.id, "score": clip.score, "elapsed_s": round(time.time() - t0, 1)})
+                else:
+                    touch("render", job.id)
+
+            if job.status == "cancelled":
+                remaining = [c for c in clips if c.status == "queued"]
+                for clip in remaining:
+                    clip.status = "cancelled"
+                job.finished_at = utcnow()
                 db.commit()
-                self._broadcast(job.project_id, "render_update", {"job_id": job.id, "status": "rendering", "progress": job.progress, "clip_id": clip.id, "score": clip.score, "elapsed_s": round(time.time() - t0, 1)})
+                self._broadcast(job.project_id, "render_update", {"job_id": job.id, "status": "cancelled"})
+                return
+
+            # assemble the director's cut synchronously so "completed" always
+            # means the final film is on disk (guarded so a manual POST /assemble
+            # can't race it). If the process dies mid-stitch the job stays
+            # 'rendering' and recovery re-runs assembly on the next boot.
+            try:
+                self._assemble_now(job.id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("assemble failed for %s: %s", job.id, exc)
 
             job.status = "completed"
             job.progress = 100.0
             job.finished_at = utcnow()
             db.commit()
-            self._broadcast(job.project_id, "render_update", {"job_id": job.id, "status": "completed", "progress": 100})
-
-            # auto-assemble the director's cut — a job that finishes renders is
-            # expected to produce a playable final film without an extra click.
-            try:
-                self._assemble_worker(job.id)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("auto-assemble failed for %s: %s", job.id, exc)
+            self._broadcast(job.project_id, "render_update", {"job_id": job.id, "status": "completed", "progress": 100, "final_url": job.final_url})
         except Exception as exc:  # noqa: BLE001
             log.exception("render worker crashed")
             job = db.get(RenderJob, job_id)
@@ -256,13 +319,54 @@ class RenderEngine:
         return specs
 
     # ----------------------------------------------------------- assembly
+    _asm_locks: dict[str, threading.Lock] = {}
+
     def assemble(self, job_id: str) -> bool:
-        if self.is_running(job_id + ":asm"):
+        db = SessionLocal()
+        try:
+            job = db.get(RenderJob, job_id)
+            if not job or job.status == "cancelled":
+                return False
+            if job.final_url or job.assembled_at:
+                return True  # already assembled
+        finally:
+            db.close()
+        # one assembler per job at a time — auto-assemble (render worker) and a
+        # manual POST /assemble must not stitch the same output path concurrently.
+        lock = self._asm_locks.setdefault(job_id, threading.Lock())
+        if not lock.acquire(blocking=False):
             return False
-        t = threading.Thread(target=self._assemble_worker, args=(job_id,), daemon=True)
-        self._runs[job_id + ":asm"] = t
-        t.start()
-        return True
+        try:
+            db = SessionLocal()
+            try:
+                job = db.get(RenderJob, job_id)
+                if job and (job.final_url or job.assembled_at):
+                    return True  # another assembler finished while we waited
+            finally:
+                db.close()
+            t = threading.Thread(target=self._assemble_worker_guarded, args=(job_id, lock), daemon=True)
+            t.start()
+            return True
+        except Exception:  # noqa: BLE001
+            lock.release()
+            raise
+
+    def _assemble_worker_guarded(self, job_id: str, lock: threading.Lock) -> None:
+        try:
+            self._assemble_worker(job_id)
+        finally:
+            lock.release()
+
+    def _assemble_now(self, job_id: str) -> None:
+        """Synchronous assembly for the render worker's final step. Blocks on
+        the same per-job lock that guards async assemble(), so a manual
+        POST /assemble during this window is a safe no-op."""
+        lock = self._asm_locks.setdefault(job_id, threading.Lock())
+        lock.acquire()
+        try:
+            self._assemble_worker(job_id)
+        finally:
+            lock.release()
 
     def _assemble_worker(self, job_id: str) -> None:
         db = SessionLocal()

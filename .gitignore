@@ -9,6 +9,9 @@ __pycache__/
 # runtime state
 media/
 *.db
+*.db-shm
+*.db-wal
+*.tsbuildinfo
 
 # secrets / local
 .env

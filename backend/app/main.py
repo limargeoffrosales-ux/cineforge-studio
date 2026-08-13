@@ -28,12 +28,22 @@ def _migrate() -> None:
     insp = inspect(engine)
     if not insp.has_table("render_jobs"):
         return  # fresh DB — create_all() builds everything
-    cols = {c["name"] for c in insp.get_columns("render_jobs")}
-    if "params" not in cols:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE render_jobs ADD COLUMN params JSON DEFAULT '{}'"))
-            conn.commit()
-        log.info("migration: render_jobs.params added")
+
+    def _add(table: str, col: str, ddl: str) -> None:
+        if col not in {c["name"] for c in insp.get_columns(table)}:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+                conn.commit()
+            log.info("migration: %s.%s added", table, col)
+
+    _add("render_jobs", "params", "JSON DEFAULT '{}'")
+    for table in ("render_jobs", "pipeline_runs"):
+        _add(table, "worker_id", "VARCHAR(64)")
+        _add(table, "attempts", "INTEGER DEFAULT 0")
+        _add(table, "max_attempts", "INTEGER DEFAULT 3")
+        _add(table, "last_heartbeat", "DATETIME")
+    _add("pipeline_runs", "start_stage", "VARCHAR(40) DEFAULT ''")
+    _add("video_clips", "attempts", "INTEGER DEFAULT 0")
 
 
 @asynccontextmanager
@@ -45,8 +55,14 @@ async def lifespan(app: FastAPI):
         seed(db)
     finally:
         db.close()
-    log.info("%s v%s ready — LLM %s", cfg.APP_NAME, cfg.APP_VERSION, "LIVE" if cfg.llm_enabled else "MOCK MODE")
-    yield
+    from .services.queue import start_dispatcher, stop_dispatcher
+
+    start_dispatcher()
+    log.info("%s v%s ready — LLM %s (queue worker %s)", cfg.APP_NAME, cfg.APP_VERSION, "LIVE" if cfg.llm_enabled else "MOCK MODE", "on")
+    try:
+        yield
+    finally:
+        stop_dispatcher()
 
 
 app = FastAPI(

@@ -153,6 +153,11 @@ def reshoot_clip(job_id: str, clip_id: str, body: dict | None = None, user: User
         raise HTTPException(status_code=404, detail="Clip not found.")
     provider = (body or {}).get("provider") or clip.provider
     prompt_override = (body or {}).get("prompt")
+    # mark queued first — if the process dies mid-reshoot the clip is left
+    # re-runnable instead of stuck in 'rendering' forever.
+    clip.status = "queued"
+    clip.error = ""
+    db.commit()
     t = threading.Thread(target=_reshoot_worker, args=(job_id, clip_id, provider, prompt_override), daemon=True)
     t.start()
     audit(db, user.id, "render.reshoot", clip_id, {"provider": provider})

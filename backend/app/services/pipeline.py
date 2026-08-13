@@ -15,10 +15,11 @@ makes individual stages swappable — swap `video_generation` for a Veo/Runway/
 Kling provider by replacing one function and setting VIDEO_PROVIDER.
 """
 import logging
-import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
+
+from sqlalchemy import select
 
 from ..db import SessionLocal, utcnow
 from ..models import AnalyticsSnapshot, PipelineRun, Project, PublishEntry, RenderJob
@@ -296,32 +297,60 @@ STAGE_FNS: dict[str, Callable[[Project, dict], dict]] = {
 
 # ---------------------------------------------------------------- engine
 class PipelineEngine:
-    """Runs pipeline runs for a project in a background thread, checkpointing
-    outputs and broadcasting progress. One run at a time per project."""
-
-    _runs: dict[str, threading.Thread] = {}
-    _lock = threading.Lock()
+    """Runs pipeline runs for a project through the DB-backed queue,
+    checkpointing outputs and broadcasting progress. One run at a time per
+    project; runs survive restarts (requeued with an attempt budget)."""
 
     def is_running(self, project_id: str) -> bool:
-        t = self._runs.get(project_id)
-        return bool(t and t.is_alive())
+        db = SessionLocal()
+        try:
+            rows = db.scalars(
+                select(PipelineRun).where(
+                    PipelineRun.project_id == project_id,
+                    PipelineRun.status.in_(("queued", "running")),
+                )
+            ).all()
+            return bool(rows)
+        finally:
+            db.close()
 
     def start(self, project_id: str, start_stage: str | None = None) -> dict:
-        with self._lock:
+        """Enqueue a pipeline run for the dispatcher. No thread is spawned."""
+        db = SessionLocal()
+        try:
             if self.is_running(project_id):
                 return {"started": False, "reason": "A pipeline run is already in progress."}
-            t = threading.Thread(target=self._worker, args=(project_id, start_stage), daemon=True)
-            self._runs[project_id] = t
-            t.start()
-        return {"started": True, "note": f"Pipeline launched from stage '{start_stage or 'idea'}'."}
+            run = PipelineRun(project_id=project_id, status="queued", start_stage=start_stage or "")
+            db.add(run)
+            db.commit()
+            return {"started": True, "run_id": run.id, "note": f"Pipeline queued from stage '{start_stage or 'idea'}'."}
+        finally:
+            db.close()
 
     # ------------------------------------------------------------- worker
-    def _worker(self, project_id: str, start_stage: str | None) -> None:
+    def _worker(self, run_id: str) -> None:
+        from .queue import WORKER_ID  # noqa: PLC0415
+
         db = SessionLocal()
         run = None
+        project_id = ""
         try:
+            run = db.get(PipelineRun, run_id)
+            if not run:
+                return
+            project_id = run.project_id
+            start_stage = run.start_stage or None
+            run.status = "running"
+            run.worker_id = WORKER_ID
+            run.last_heartbeat = utcnow()
+            db.commit()
+
             p = db.get(Project, project_id)
             if not p:
+                run.status = "failed"
+                run.error = "project missing"
+                run.finished_at = utcnow()
+                db.commit()
                 return
             if not p.stages:
                 p.stages = initial_stages()
@@ -338,8 +367,6 @@ class PipelineEngine:
 
             p.status = "in_production" if start_idx < STAGE_INDEX["video_generation"] else "post_production"
             p.current_stage = STAGES[start_idx]["id"]
-            run = PipelineRun(project_id=project_id, status="running")
-            db.add(run)
             db.commit()
 
             ctx: dict[str, Any] = {}
@@ -391,6 +418,7 @@ class PipelineEngine:
                 for i in range(1, ticks + 1):
                     time.sleep(settings.PIPELINE_STAGE_SECONDS / ticks)
                     state["progress"] = round(i * 100 / ticks, 1)
+                    run.last_heartbeat = utcnow()
                     db.commit()
                     self._broadcast(project_id, "stage_update", {"project_id": project_id, "stage_id": sid, "status": "running", "progress": state["progress"], "project_progress": self._progress(p)})
 

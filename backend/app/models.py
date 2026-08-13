@@ -83,11 +83,16 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    status: Mapped[str] = mapped_column(String(20), default="running")  # running|completed|failed|stopped
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|completed|failed|stopped|cancelled
     stages_completed: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    start_stage: Mapped[str] = mapped_column(String(40), default="")
+    worker_id: Mapped[str] = mapped_column(String(64), nullable=True, default=None)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class Character(Base):
@@ -141,6 +146,10 @@ class RenderJob(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    worker_id: Mapped[str] = mapped_column(String(64), nullable=True, default=None)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class Asset(Base):
@@ -177,6 +186,7 @@ class VideoClip(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class PublishEntry(Base):
