@@ -338,7 +338,7 @@ class RenderEngine:
         else:
             prev = "[0:v]"
 
-        cmd += ["-filter_complex", ";".join(parts + [f"{prev}format=yuv420p[vout]"])]
+        cmd += ["-filter_complex", ";".join(parts + [f"{prev}eq=contrast=1.06:saturation=1.10,vignette=PI/5,noise=alls=5:allf=t,format=yuv420p[vout]"])]
         cmd += ["-map", "[vout]", "-map", audio_map]
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
                 "-c:a", "aac", "-shortest", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]

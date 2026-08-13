@@ -265,14 +265,51 @@ def paint_near(size: tuple[int, int], cat: str, palette: list[str], rng: random.
     return img.filter(ImageFilter.GaussianBlur(1.4))  # shallow DOF
 
 
-def atmosphere(size: tuple[int, int], cat: str, t: float, rng: random.Random) -> Image.Image:
-    """Per-frame drifting foreground element — fog band or dust motes."""
+def atmosphere(size: tuple[int, int], cat: str, t: float, rng: random.Random,
+               weather: str = "", tod: str = "midday", mood: str = "neutral") -> Image.Image:
+    """Per-frame drifting foreground element — fog band, dust motes or
+    weather particles driven by the shot's time of day / weather."""
     W, H = size
     cat = cat.lower()
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    foggy = "forest" in cat or "ancient" in cat or "terraces" in cat or "interior" in cat
-    if foggy:
+    wx = (weather or "").lower()
+    ctx = (tod or "") + " " + wx + " " + (mood or "")
+    raining = any(k in ctx for k in ("rain", "drizzle", "mist", "overcast"))
+    snowing = any(k in ctx for k in ("winter", "snow", "cold"))
+    night = "night" in tod or "night" in wx
+    embers = night and any(k in cat for k in ("desert", "ancient", "space", "city", "street"))
+    fireflies = night and any(k in cat for k in ("forest", "rainforest", "interior"))
+    if raining:
+        for _ in range(42):
+            r0, r1 = rng.random(), rng.random()
+            x = (r0 * (W + 90) - 45 + t * 240 * (0.6 + r0 * 0.9)) % (W + 90) - 45
+            y = (r1 * H + t * 520) % H
+            ln = 10 + r0 * 8
+            d.line([x, y, x - ln * 0.22, y + ln], fill=(205, 215, 228, rng.randint(30, 75)), width=1)
+    elif snowing:
+        for _ in range(30):
+            r0 = rng.random()
+            x = (r0 * W + t * 22 * (0.5 + r0)) % W
+            y = (rng.random() * H + t * 38) % H
+            x += math.sin(t * 1.7 + r0 * 9.1) * 14
+            r = 1.1 + r0 * 1.6
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(248, 250, 252, rng.randint(80, 170)))
+    elif embers:
+        for _ in range(16):
+            r0 = rng.random()
+            x = (r0 * W + math.sin(t * 0.8 + r0 * 7.3) * 26) % W
+            y = (H * 0.75 - t * 46 * r0 - rng.random() * H * 0.2) % H
+            r = 1.2 + r0 * 1.8
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(255, 160 + rng.randint(0, 60), 60, rng.randint(60, 190)))
+    elif fireflies:
+        for _ in range(12):
+            r0 = rng.random()
+            x = (r0 * W * 1.2 + math.sin(t * 0.5 + r0 * 11) * 30) % (W * 1.2)
+            y = rng.random() * H * 0.7 + (t * 6) % (H * 0.3) + math.sin(t * 1.3 + r0 * 5) * 12
+            a = rng.randint(40, 140) + int(70 * math.sin(t * 2.6 + r0 * 8.7))
+            d.ellipse([x - 1.6, y - 1.6, x + 1.6, y + 1.6], fill=(188, 255, 120, max(20, min(200, a))))
+    elif any(k in cat for k in ("forest", "ancient", "terraces", "interior")):
         drift = (t * 6) % (W + 400) - 200
         for i in range(3):
             fw = W * 0.5
@@ -288,42 +325,94 @@ def atmosphere(size: tuple[int, int], cat: str, t: float, rng: random.Random) ->
     return layer.filter(ImageFilter.GaussianBlur(1.1))
 
 
+def env_anim(size: tuple[int, int], cat: str, t: float, rng: random.Random) -> Image.Image:
+    """Animated environment details — shimmer, flicker, drifting light —
+    so even locked-off shots read as living scenes."""
+    W, H = size
+    cat = cat.lower()
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    if any(k in cat for k in ("terraces", "beach")):
+        for i in range(3):  # water shimmer streaks
+            sx = (t * (26 + i * 9) + i * W * 0.33) % (W + 260) - 130
+            sy = H * (0.52 + i * 0.12)
+            pulse = 0.6 + 0.4 * math.sin(t * 2.1 + i * 2.4)
+            d.ellipse([sx, sy, sx + W * (0.16 + i * 0.05), sy + H * 0.012], fill=(240, 250, 255, int(26 * pulse)))
+    elif "skyline" in cat or "street" in cat:
+        for i in range(6):  # window lights flickering in the dark
+            fx = (i * 997) % W
+            fy = H * (0.22 + ((i * 313) % 34) / 100)
+            a = int(60 + 90 * abs(math.sin(t * (1.5 + i * 0.7) + i * 2.3)))
+            d.rectangle([fx, fy, fx + 4 + (i % 2) * 3, fy + 7], fill=(255, 208, 120, a))
+        if "street" in cat:
+            for i in range(2):  # passing headlight glow
+                hy = H * (0.90 + (i * 0.05) * math.sin(t * 0.6 + i))
+                d.ellipse([W * (0.2 + i * 0.5) - 30, hy, W * (0.2 + i * 0.5) + 30, hy + H * 0.03], fill=(255, 240, 200, 22))
+    elif "forest" in cat or "rainforest" in cat:
+        for i in range(2):  # god rays swaying slowly
+            gx = W * (0.28 + i * 0.4) + math.sin(t * 0.35 + i * 3.1) * W * 0.06
+            d.polygon([(gx - 14, 0), (gx + 14, 0), (gx + W * 0.07, H * 0.75), (gx - W * 0.05, H * 0.75)], fill=(255, 240, 200, int(12 + 6 * math.sin(t * 0.8 + i))))
+    elif "space" in cat or "orbital" in cat:
+        for i in range(5):  # twinkling stars
+            sx = (i * 919 + 40) % W
+            sy = (i * 571) % int(H * 0.8)
+            r = 1.0 + (0.7 if i == 3 else 0)
+            a = int(110 + 90 * math.sin(t * (2.0 + i * 0.53) + i * 5))
+            d.ellipse([sx - r, sy - r, sx + r, sy + r], fill=(230, 240, 252, max(25, a)))
+    elif "ancient" in cat or "desert" in cat:
+        for i in range(3):  # rising heat shimmer bands
+            by = (H * 0.42 - t * 6.0 * (1 + i * 0.3) + i * H * 0.1) % (H * 0.5)
+            d.arc([-W * 0.2, by, W * 1.2, by + H * 0.06], 20, 160, fill=(255, 210, 130, 14), width=3)
+    elif "interior" in cat or "classroom" in cat:
+        a = int(10 + 6 * math.sin(t * 1.3))  # projector beam breathing
+        d.polygon([(W * 0.08, H * 0.06), (W * 0.5, H * 0.06), (W * 0.72, H * 0.62), (W * 0.3, H * 0.62)], fill=(255, 250, 230, a))
+    else:  # studio
+        a = int(46 + 22 * math.sin(t * 2.2))  # softbox flicker
+        d.ellipse([W * 0.62 - H * 0.22 - 6, H * 0.16 - 6, W * 0.62 + H * 0.22 + 6, H * 0.16 + H * 0.44 + 6], fill=(255, 240, 210, a))
+    return layer
+
+
 def camera_window(move: str, t: float, dur: float, W: int, H: int, rng: random.Random) -> tuple[float, float, float, float, float]:
-    """(cx, cy, zoom, rot) in canvas coords — organic, layered camera work."""
+    """(cx, cy, zoom, rot) in canvas coords — organic, layered camera work.
+
+    Positional moves run on a smoothstep curve with a soft settle so pans,
+    trucks and craning feel like a real operator, not a linear tween."""
     p = clamp(t / max(dur, 0.01), 0, 1)
+    e = p * p * (3 - 2 * p)  # smoothstep
+    settle = math.sin(p * math.pi)  # ease-out overshoot/settle envelope
     CW, CH = W * S_CANVAS, H * S_CANVAS
     zoom, dx, dy, rot = 0.0, 0.0, 0.0, 0.0
     m = (move or "").lower()
     if any(k in m for k in ("push", "dolly in", "zoom in")):
-        zoom = 0.5 * p
+        zoom = 0.5 * e + 0.02 * settle
     elif any(k in m for k in ("pull", "dolly out", "zoom out", "reveal")):
-        zoom = 0.5 * (1 - p)
+        zoom = 0.5 * (1 - e) + 0.02 * settle
     elif any(k in m for k in ("pan", "sweep", "whip")):
-        dx = 0.18 * CW * (2.4 if "whip" in m else 1.0) * p
+        dx = 0.18 * CW * (2.4 if "whip" in m else 1.0) * e
     elif "tilt" in m:
-        dy = 0.16 * CH * p
+        dy = 0.16 * CH * e
     elif "truck" in m:
-        dx = -0.18 * CW * p
+        dx = -0.18 * CW * e
     elif "orbit" in m or "around" in m:
-        dx = 0.24 * CW * p
+        dx = 0.24 * CW * e
         dy = 0.05 * CH * math.sin(p * math.pi)
-        rot = 2.4 * p
+        rot = 2.4 * e
     elif "crane" in m:
-        dy = -0.13 * CH * p
+        dy = -0.13 * CH * e
     elif "handheld" in m or "shaky" in m:
         zoom = 0.03 * math.sin(p * math.pi)
         dx = (math.sin(t * 3.1) + 0.5 * math.sin(t * 7.3)) * 0.019 * CW
         dy = (math.sin(t * 2.3 + 1.7) + 0.5 * math.sin(t * 6.1)) * 0.016 * CH
         rot = (math.sin(t * 1.9) + math.sin(t * 4.7)) * 0.8
     elif any(k in m for k in ("steadicam", "float", "soar", "drift", "glide")):
-        dy = 0.09 * CH * p
-        dx = 0.05 * CW * p
-        rot = 0.6 * p
+        dy = 0.09 * CH * e
+        dx = 0.05 * CW * e
+        rot = 0.6 * e
     elif any(k in m for k in ("rack", "macro")):
         zoom = 0.10 * math.sin(p * math.pi)
     elif "gimbal" in m:
-        dx = 0.05 * CW * p
-        rot = 1.1 * p
+        dx = 0.05 * CW * e
+        rot = 1.1 * e
     else:  # static / slider / fpv / underwater / ""
         zoom = 0.02 * math.sin(p * math.pi * 3)
         dx = 0.03 * CW * math.sin(p * math.pi * 2)
@@ -463,18 +552,41 @@ def _int(v: float) -> int:
     return int(round(v))
 
 
-def draw_character(draw: ImageDraw.ImageDraw, cx: float, cy: float, scale: float, colors: list[str], t: float) -> None:
-    """Simple stylized presenter figure (head + torso + arms) with subtle life."""
+def draw_character(
+    draw: ImageDraw.ImageDraw,
+    cx: float,
+    cy: float,
+    scale: float,
+    colors: list[str],
+    t: float,
+    talk: float = 0.0,
+    blink: bool = False,
+) -> None:
+    """Simple stylized presenter figure (head + torso + arms) with real life:
+    breathing bob, speech-driven mouth + gestures, periodic blinks."""
     bob = math.sin(t * 2.2) * 1.5 * scale
     skin, shirt = (232, 190, 160), colors[0] if colors else (245, 179, 1)
     head_r = 16 * scale
     hy = cy - 34 * scale + bob * 0.4
     draw.ellipse([_int(cx - head_r), _int(hy - head_r), _int(cx + head_r), _int(hy + head_r)], fill=skin)
     draw.ellipse([_int(cx - head_r * 0.85), _int(hy - head_r * 0.85), _int(cx + head_r * 0.85), _int(hy + head_r * 0.85)], outline=(40, 30, 24), width=1)
+    # eyes (blink = thin closed line)
+    eye_y = hy + head_r * 0.18
+    for side in (-1, 1):
+        ex = cx + side * head_r * 0.42
+        if blink:
+            draw.line([_int(ex - 3.6 * scale), _int(eye_y), _int(ex + 3.6 * scale), _int(eye_y)], fill=(40, 30, 24), width=2)
+        else:
+            draw.ellipse([_int(ex - 3.4 * scale), _int(eye_y - 3.4 * scale), _int(ex + 3.4 * scale), _int(eye_y + 3.4 * scale)], fill=(40, 30, 24))
+            draw.ellipse([_int(ex - 1.4 * scale), _int(eye_y - 1.4 * scale), _int(ex + 1.4 * scale), _int(eye_y + 1.4 * scale)], fill=(255, 255, 250))
+    # mouth — opens with the speech envelope
+    mw = 4.2 * scale
+    mh = 1.6 * scale + talk * 4.6 * scale
+    draw.ellipse([_int(cx - mw), _int(hy + 8.5 * scale - mh / 2), _int(cx + mw), _int(hy + 8.5 * scale + mh / 2)], fill=(110, 38, 30))
     draw.rounded_rectangle([_int(cx - 22 * scale), _int(hy + 6 * scale), _int(cx + 22 * scale), _int(hy + 58 * scale)], _int(10 * scale), fill=shirt)
-    for side in (-1, 1):  # arms
+    for side in (-1, 1):  # arms — speech gestures + idle sway
         ax = cx + side * 22 * scale
-        lift = math.sin(t * 1.6 + side) * 6 * scale
+        lift = math.sin(t * 1.6 + side) * 6 * scale + (talk * 0.6) * math.sin(t * 4.4 + side * 2.2) * 9 * scale
         draw.line([_int(ax), _int(hy + 16 * scale), _int(ax + side * 14 * scale), _int(hy + 34 * scale + lift)], fill=shirt, width=_int(5 * scale))
         draw.ellipse([_int(ax + side * 14 * scale - 4 * scale), _int(hy + 32 * scale + lift), _int(ax + side * 14 * scale + 4 * scale), _int(hy + 40 * scale + lift)], fill=skin)
     # shadow
@@ -718,6 +830,11 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
     mid = paint_mid(canvas, cat, palette, rng)
     near = paint_near(canvas, cat, palette, rng)
 
+    # character acting: blink rhythm + speech envelope for narrator beats
+    blink_period = 2.6 + rng.uniform(0.0, 2.2)
+    spoken_beat = (char.get("action", "") + " " + str(move)).lower() if char else ""
+    speaks = any(k in spoken_beat for k in ("narrat", "speak", "talk", "line", "voice", "deliver", "present", "to camera"))
+
     # overlays live in output space (drawn once, composited per frame)
     light_static = lighting_overlay((W, H), lighting, tod, rng)
     vig = vignette((W, H))
@@ -735,8 +852,15 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
                 fcx = {"left third": 0.26, "center": 0.5, "right third": 0.74}.get(pos, 0.5) * canvas[0]
                 fcy = canvas[1] * 0.42
                 scale = 1.35 * (1 + 0.12 * (t / dur) if "toward" in char.get("action", "") else 1)
-                draw_character(ImageDraw.Draw(char_layer), fcx, fcy, scale, char.get("palette", palette), t)
-            vfx = atmosphere((W, H), cat, t, rng)
+                talk = max(0.0, 0.55 + 0.45 * math.sin(t * 11.3) * math.sin(t * 4.1)) if speaks else 0.0
+                draw_character(
+                    ImageDraw.Draw(char_layer), fcx, fcy, scale, char.get("palette", palette), t,
+                    talk=talk, blink=(t % blink_period) < 0.13,
+                )
+            vfx = Image.alpha_composite(
+                atmosphere((W, H), cat, t, rng, weather=str(spec.get("weather", "")), tod=tod, mood=mood),
+                env_anim((W, H), cat, t, rng),
+            )
             frame: Image.Image = compose_2d5(far, mid, near, W, H, cam, char_layer, vfx)
             _, _, _, rot, _ = cam
             if rot:
