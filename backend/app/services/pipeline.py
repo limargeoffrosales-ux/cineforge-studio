@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from ..db import SessionLocal, utcnow
-from ..models import AnalyticsSnapshot, PipelineRun, Project, PublishEntry
+from ..models import AnalyticsSnapshot, PipelineRun, Project, PublishEntry, RenderJob
 from ..config import settings
 from . import generators
 from .llm import llm_json
@@ -411,6 +411,7 @@ class PipelineEngine:
             run.stages_completed = len(STAGES) - start_idx
             run.finished_at = utcnow()
             db.commit()
+            self._auto_render(db, p)
             self._broadcast(project_id, "run_finished", {"project_id": project_id, "status": "completed"})
         except Exception as exc:  # noqa: BLE001
             log.exception("Pipeline worker crashed")
@@ -425,6 +426,42 @@ class PipelineEngine:
             self._broadcast(project_id, "run_finished", {"project_id": project_id, "status": "failed", "error": str(exc)})
         finally:
             db.close()
+
+    @staticmethod
+    def _auto_render(db, p: Project) -> None:
+        """Render the director's cut as soon as a run completes, so the
+        project's Final film page always has a fresh playable video.
+        Skips only when a render for this project is already running."""
+        plan = (p.outputs or {}).get("video_generation") or {}
+        if not plan.get("scenes"):
+            return
+        import uuid
+
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from ..services.render import render_engine  # noqa: PLC0415
+
+        jobs = db.scalars(
+            select(RenderJob).where(RenderJob.project_id == p.id, RenderJob.owner_id == p.owner_id)
+        ).all()
+        if any(j.status in ("queued", "rendering") for j in jobs):
+            return
+        job = RenderJob(
+            id=uuid.uuid4().hex,
+            owner_id=p.owner_id,
+            project_id=p.id,
+            scene_label="Full timeline",
+            model="auto",
+            resolution="1080p",
+            fps=30,
+            priority=5,
+            params={},
+            status="queued",
+        )
+        db.add(job)
+        db.commit()
+        log.info("auto-rendering final film for %s (%s)", p.id, job.id)
+        render_engine.start(job.id)
 
     @staticmethod
     def _progress(p: Project) -> float:

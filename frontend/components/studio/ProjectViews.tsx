@@ -1,9 +1,11 @@
 "use client";
 import { useState } from "react";
-import { Badge, Button, Card, CopyButton, Select, Textarea } from "@/components/ui";
+import { motion } from "framer-motion";
+import { Clapperboard, RefreshCw } from "lucide-react";
+import { Badge, Button, Card, CopyButton, Select, Spinner, Textarea } from "@/components/ui";
 import { LineChart, BarChart } from "@/components/charts";
-import { fmtDuration, fmtNum, cx } from "@/lib/utils";
-import { Project } from "@/lib/types";
+import { fmtDate, fmtDuration, fmtNum, cx } from "@/lib/utils";
+import { Project, RenderJob } from "@/lib/types";
 
 /* ---------------------------------------------------------------- Script */
 export function ScriptView({ project }: { project: Project }) {
@@ -449,6 +451,130 @@ export function PublishView({ project, onPublish }: { project: Project; onPublis
           ))}
         </div>
       </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- Final film */
+export function FinalFilmView({
+  project,
+  jobs,
+  onRender,
+  busy,
+}: {
+  project: Project;
+  jobs: RenderJob[];
+  onRender: () => void;
+  busy: boolean;
+}) {
+  const mine = (jobs || []).filter((j) => j.project_id === project.id);
+  const latest = mine[0] || null;
+  const films = mine.filter((j) => j.final_url);
+  const running = latest && ["queued", "rendering"].includes(latest.status);
+  const providers = new Set((latest?.clips || []).map((c: any) => c.provider).filter(Boolean));
+
+  return (
+    <div className="space-y-4">
+      {running && (
+        <Card className="p-6">
+          <div className="flex items-center gap-3">
+            <Spinner className="h-5 w-5 text-gold-400" />
+            <div>
+              <div className="font-display text-sm font-semibold text-zinc-100">Rendering the director's cut…</div>
+              <div className="text-xs text-zinc-500">
+                {latest?.scene_label || "Full timeline"} · {latest?.resolution} · {latest?.fps}fps
+              </div>
+            </div>
+            <span className="ml-auto font-bold text-gold-400">{latest?.progress ?? 0}%</span>
+          </div>
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/8">
+            <motion.div
+              className="h-full rounded-full bg-gradient-to-r from-violet-500 to-gold-400"
+              animate={{ width: `${latest?.progress ?? 0}%` }}
+            />
+          </div>
+          <p className="mt-4 text-xs text-zinc-600">
+            The film assembles automatically when rendering finishes — stay on this page and it appears here.
+          </p>
+        </Card>
+      )}
+
+      {!running && latest?.final_url && (
+        <Card className="overflow-hidden">
+          <div className="relative bg-black">
+            <video
+              key={latest.final_url}
+              src={`/api/backend${latest.final_url}`}
+              controls
+              playsInline
+              preload="metadata"
+              className="aspect-video w-full"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 p-5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h3 className="font-display text-base font-semibold text-zinc-50">Director's cut</h3>
+                <Badge tone="green">🎬 assembled</Badge>
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs">
+                <span className="chip">⏱ {latest.duration_s ? `${latest.duration_s}s` : fmtDuration(latest.duration_s)}</span>
+                <span className="chip">📐 {latest.resolution}</span>
+                <span className="chip">🎞 {latest.fps}fps</span>
+                {[...providers].slice(0, 4).map((p) => (
+                  <span key={p} className="chip">{p}</span>
+                ))}
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <a href={`/api/backend${latest.final_url}`} download={`cineforge-${project.id}.mp4`} className="btn-ghost !py-1.5 text-xs">
+                ⬇ Download MP4
+              </a>
+              <Button onClick={onRender} disabled={busy} variant="ghost" className="!py-1.5 text-xs">
+                {busy ? <Spinner className="h-3.5 w-3.5" /> : "⟳ Re-render"}
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {!running && !latest?.final_url && (
+        <Card className="p-10 text-center">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-400/10 text-2xl">🎬</div>
+          <h3 className="font-display text-base font-semibold text-zinc-100">No final film yet</h3>
+          <p className="mx-auto mt-2 max-w-md text-sm text-zinc-500">
+            {latest?.status === "failed" ? `Last render failed: ${latest.error || "unknown error"}` : "Run the pipeline and the director's cut renders automatically onto this page — or kick it off right now."}
+          </p>
+          <div className="mt-5 flex justify-center gap-2">
+            {latest?.status === "failed" && (
+              <button onClick={onRender} disabled={busy} className="btn-ghost !py-2 text-sm">
+                <RefreshCw className="mr-1.5 h-4 w-4" /> Retry render
+              </button>
+            )}
+            <Button onClick={onRender} disabled={busy}>
+              {busy ? <Spinner className="h-4 w-4" /> : <Clapperboard className="h-4 w-4" />} Render final film
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {films.length > 1 && (
+        <Card className="p-5">
+          <h4 className="mb-3 font-display text-xs font-semibold uppercase tracking-wider text-zinc-500">Earlier films</h4>
+          <div className="space-y-2">
+            {films.slice(1).map((f) => (
+              <div key={f.id} className="flex items-center gap-3 rounded-xl bg-ink-850 p-2.5">
+                <video src={`/api/backend${f.final_url}`} className="h-14 w-24 rounded-lg bg-black object-cover" muted playsInline preload="metadata" />
+                <div className="min-w-0 text-xs">
+                  <div className="font-semibold text-zinc-300">{f.scene_label || "Full timeline"}</div>
+                  <div className="text-zinc-600">{f.resolution} · {f.status}{f.finished_at ? ` · ${fmtDate(f.finished_at)}` : ""}</div>
+                </div>
+                <a href={`/api/backend${f.final_url}`} download className="ml-auto btn-ghost !py-1 text-xs">⬇</a>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

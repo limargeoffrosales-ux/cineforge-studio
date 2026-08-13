@@ -20,8 +20,10 @@ import {
   SeoView,
   PublishView,
   ProjectAnalyticsView,
+  FinalFilmView,
 } from "@/components/studio/ProjectViews";
 import { fmtDate, STAGE_ICONS } from "@/lib/utils";
+import { RenderJob } from "@/lib/types";
 
 const TABS = [
   { id: "pipeline", label: "Pipeline" },
@@ -33,6 +35,7 @@ const TABS = [
   { id: "seo", label: "SEO" },
   { id: "publish", label: "Publish" },
   { id: "analytics", label: "Analytics" },
+  { id: "final", label: "Final film" },
 ];
 
 export default function ProjectStudioPage() {
@@ -47,6 +50,8 @@ export default function ProjectStudioPage() {
   const [editTitle, setEditTitle] = useState("");
   const [editDesc, setEditDesc] = useState("");
   const [analytics, setAnalytics] = useState<any>(null);
+  const [jobs, setJobs] = useState<RenderJob[]>([]);
+  const [rendering, setRendering] = useState(false);
 
   const reload = useCallback(async () => {
     const [p, s, st] = await Promise.all([
@@ -60,9 +65,38 @@ export default function ProjectStudioPage() {
     setSelectedStage((cur) => cur || st.current_stage || "idea");
   }, [id]);
 
+  const loadJobs = useCallback(async () => {
+    try {
+      setJobs(await api<RenderJob[]>("/render/jobs"));
+    } catch {
+      /* offline */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadJobs();
+    const t = setInterval(loadJobs, 3000);
+    return () => clearInterval(t);
+  }, [loadJobs]);
+
   useEffect(() => {
     reload().catch(() => {});
   }, [reload]);
+
+  const renderFinal = async () => {
+    setRendering(true);
+    try {
+      await api("/render/jobs", {
+        method: "POST",
+        body: { project_id: id, scene_label: "Full timeline", model: "auto", resolution: "1080p", fps: 30 },
+      });
+      loadJobs();
+    } catch (e: any) {
+      alert(e.message || "Could not start render");
+    } finally {
+      setRendering(false);
+    }
+  };
 
   useEffect(() => {
     if (tab === "analytics" && project) {
@@ -88,6 +122,8 @@ export default function ProjectStudioPage() {
       });
     } else if (ev.type === "run_finished") {
       reload();
+      loadJobs();
+      if (ev.status === "completed") setTab("final");
     } else if (ev.type === "poll") {
       setStatus((prev) => {
         if (!prev || !ev.stages) return prev;
@@ -249,6 +285,7 @@ export default function ProjectStudioPage() {
         {tab === "seo" && <SeoView project={project} />}
         {tab === "publish" && <PublishView project={project} onPublish={() => setTimeout(reload, 600)} />}
         {tab === "analytics" && <ProjectAnalyticsView analytics={analytics} />}
+        {tab === "final" && <FinalFilmView project={project} jobs={jobs} onRender={renderFinal} busy={!!rendering} />}
       </div>
 
       <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Edit project">
