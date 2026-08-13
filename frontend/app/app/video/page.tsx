@@ -199,7 +199,7 @@ export default function VideoLabPage() {
               The generation engine routes every scene to the frontier model built for it — <b className="text-gold-400">Veo 3.1</b>,{" "}
               <b className="text-gold-400">Runway Gen-4.5</b>, <b className="text-gold-400">Kling 3.0</b>, <b className="text-gold-400">Seedance 2.0</b> —
               then quality-gates, re-shoots and assembles the director's cut. Without keys it renders live on the{" "}
-              <b className="text-gold-400">Pollinations</b> free tier (Wan 2.6 / Seedance — paste a free token in Settings), with a built-in
+              <b className="text-gold-400">Pollinations</b> free tier (Wan 2.6 / Seedance — paste a free token from enter.pollinations.ai/keys in Settings), with a built-in
               procedural renderer as the offline fallback.
             </p>
           </div>

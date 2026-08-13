@@ -40,7 +40,7 @@ class Settings:
     RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY", "")
     KLING_API_KEY = os.getenv("KLING_API_KEY", "")
     SEEDANCE_API_KEY = os.getenv("SEEDANCE_API_KEY", "")
-    # Free live video generation (Wan 2.6 / Seedance) — token from auth.pollinations.ai
+    # Free live video generation (Wan 2.6 / Seedance) — token from enter.pollinations.ai/keys
     POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", "")
 
     # Audio / TTS

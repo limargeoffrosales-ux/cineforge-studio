@@ -94,14 +94,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
     "pollinations": ProviderSpec(
         id="pollinations", name="Pollinations Live", vendor="Pollinations.AI",
         api="gen.pollinations.ai/video — Wan 2.6 (T2V) / Seedance (I2V), free Seed tier",
-        strengths=("free token from auth.pollinations.ai", "real diffusion video (Wan 2.6)", "image-to-video via Seedance", "audio baked into wan output"),
+        strengths=("free token from enter.pollinations.ai/keys", "real diffusion video (Wan 2.6)", "image-to-video via Seedance", "audio baked into wan output"),
         weaknesses=("shared-GPU queue waits", "720p ceiling on free tier", "rate-limited (5s between requests)"),
         max_duration_s=15, max_res="720p", native_audio=True,
         image_to_video=True, video_to_video=False, last_frame=True,
         character_consistency="reference", camera_control="prompt",
         price_per_sec=0.0,
         quality={"motion": 0.82, "physics": 0.78, "consistency": 0.75, "aesthetic": 0.80, "adherence": 0.85, "audio": 0.9},
-        director_note="The free live renderer — default online path. Paste a free token from auth.pollinations.ai in Settings.",
+        director_note="The free live renderer — default online path. Paste a free token from enter.pollinations.ai/keys in Settings.",
     ),
 }
 
@@ -366,7 +366,7 @@ class PollinationsClient(ProviderClient):
     """Free live video generation via gen.pollinations.ai.
 
     Text-to-video on Wan 2.6; image-to-video via Seedance (the free tier's
-    reliable I2V path). Needs only a free token from auth.pollinations.ai
+    reliable I2V path). Needs only a free token from enter.pollinations.ai/keys
     stored as a key (Settings → Pollinations) or POLLINATIONS_API_KEY.
     Any failure degrades to the built-in procedural renderer."""
 
