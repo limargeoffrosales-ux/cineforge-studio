@@ -26,7 +26,9 @@ def _migrate() -> None:
     from sqlalchemy import inspect, text
 
     insp = inspect(engine)
-    cols = {c["name"] for c in insp.get_columns("render_jobs")} if insp.has_table("render_jobs") else set()
+    if not insp.has_table("render_jobs"):
+        return  # fresh DB — create_all() builds everything
+    cols = {c["name"] for c in insp.get_columns("render_jobs")}
     if "params" not in cols:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE render_jobs ADD COLUMN params JSON DEFAULT '{}'"))
