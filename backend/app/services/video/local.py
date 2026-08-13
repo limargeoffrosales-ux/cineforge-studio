@@ -63,7 +63,317 @@ MOOD_TINTS = {
 }
 
 
-# ------------------------------------------------------------ environment
+# ------------------------------------------------------------ 2.5D layers
+# Parallax factors per depth plane — how far each plane slides vs the
+# camera: far barely moves, near sweeps fastest. Sells real depth.
+PARALLAX = (0.35, 0.8, 1.25)
+S_CANVAS = 2.0  # overscan on the painted canvas (room for pan + parallax)
+
+
+def _sky(size: tuple[int, int], top: tuple[int, int, int], bottom: tuple[int, int, int]) -> Image.Image:
+    W, H = size
+    img = Image.new("RGB", size)
+    d = ImageDraw.Draw(img)
+    for y in range(H):
+        f = y / H
+        c = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
+        d.line([(0, y), (W, y)], fill=c)
+    return img
+
+
+def _haze(prev: Image.Image, size: tuple[int, int], y0: float, y1: float, tone: tuple[int, int, int], a: int = 90) -> Image.Image:
+    """Atmospheric haze band — pulls far planes visually back."""
+    W, H = size
+    band = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(band)
+    for y in range(int(H * y0), int(H * y1)):
+        a0 = int(a * (1 - (y / H - y0) / max(0.001, y1 - y0)))
+        d.line([(0, y), (W, y)], fill=tone + (a0,))
+    return Image.alpha_composite(prev.convert("RGBA"), band)
+
+
+def paint_far(size: tuple[int, int], cat: str, palette: list[str], rng: random.Random) -> Image.Image:
+    """Distant plane: sky, sun/moon, hazy ridges or horizon shapes."""
+    W, H = size
+    cat = cat.lower()
+    p0 = hex_rgb(palette[0])
+    p1 = hex_rgb(palette[1], (51, 51, 64))
+    if "terraces" in cat or "forest" in cat or "ancient" in cat or "desert" in cat:
+        img = _sky(size, p0, p1)
+        d = ImageDraw.Draw(img)
+        sun_x = 0.72 if rng.random() < 0.8 else 0.3
+        d.ellipse([W * sun_x - H * 0.14, H * 0.10 - H * 0.14, W * sun_x + H * 0.14, H * 0.10 + H * 0.14], fill=(255, 224, 160))
+        ridge_y = 0.52 + rng.uniform(-0.04, 0.04)
+        for i in range(5):  # hazy distant ridges
+            ry = H * ridge_y + i * H * 0.045
+            shade = 90 + i * 18
+            d.polygon([(0, H), (W * 0.22, ry - H * 0.02), (W * 0.5, ry), (W * 0.78, ry + H * 0.01), (W, ry - H * 0.01), (W, H)], fill=(shade, shade + 8, shade + 22))
+        return _haze(img, size, ridge_y - 0.10, ridge_y + 0.06, p1, 70)
+    if "skyline" in cat or "street" in cat:
+        img = _sky(size, (8, 10, 26), (24, 20, 44))
+        d = ImageDraw.Draw(img)
+        for _ in range(70):
+            sx, sy = rng.randint(0, W), rng.randint(0, int(H * 0.55))
+            r = rng.random() * 1.4
+            d.ellipse([sx, sy, sx + r, sy + r], fill=(210, 224, 244, 180))
+        for i in range(8):  # far tower band
+            bx = i * W / 8 + rng.randint(-14, 14)
+            bw = W / 10 + rng.randint(6, 26)
+            bh = H * rng.uniform(0.14, 0.3)
+            d.rectangle([bx, H * 0.62 - bh, bx + bw, H * 0.62], fill=(34 + i * 3, 38 + i * 2, 66))
+        return _haze(img, size, 0.50, 0.64, (20, 18, 40), 60)
+    if "beach" in cat:
+        img = _sky(size, (255, 160, 90), (255, 210, 160))
+        d = ImageDraw.Draw(img)
+        d.ellipse([W * 0.7 - H * 0.13, H * 0.12 - H * 0.13, W * 0.7 + H * 0.13, H * 0.12 + H * 0.13], fill=(255, 236, 190))
+        for i in range(5):  # clouds
+            cw = W * rng.uniform(0.1, 0.22)
+            cx0 = rng.uniform(0, W)
+            cy0 = H * rng.uniform(0.18, 0.4)
+            d.ellipse([cx0, cy0, cx0 + cw, cy0 + H * 0.04], fill=(255, 230, 200, 210))
+        return img.convert("RGBA")
+    if "interior" in cat or "classroom" in cat:
+        img = _sky(size, (120, 130, 140), (200, 205, 210))
+        d = ImageDraw.Draw(img)
+        d.rectangle([W * 0.08, H * 0.06, W * 0.5, H * 0.46], fill=(170, 200, 220))  # window
+        d.line([W * 0.29, H * 0.06, W * 0.29, H * 0.46], fill=(120, 140, 155), width=3)
+        d.line([W * 0.08, H * 0.26, W * 0.5, H * 0.26], fill=(120, 140, 155), width=3)
+        return img.convert("RGBA")
+    if "space" in cat or "orbital" in cat:
+        img = _sky(size, (4, 4, 12), (10, 8, 26))
+        d = ImageDraw.Draw(img)
+        for _ in range(110):
+            sx, sy = rng.randint(0, W), rng.randint(0, int(H * 0.9))
+            r = rng.random() * 1.5
+            d.ellipse([sx, sy, sx + r, sy + r], fill=(220, 232, 245, 210))
+        d.ellipse([W * 0.62 - H * 0.4, H * 0.12, W * 0.62 + H * 0.4, H * 0.12 + H * 0.8], outline=(90, 150, 210), width=2)
+        d.arc([W * 0.62 - H * 0.4, H * 0.12, W * 0.62 + H * 0.4, H * 0.12 + H * 0.8], 55, 305, fill=(70, 130, 200), width=10)
+        return img.convert("RGBA")
+    # studio
+    img = _sky(size, (18, 20, 26), (34, 36, 44))
+    return img.convert("RGBA")
+
+
+def paint_mid(size: tuple[int, int], cat: str, palette: list[str], rng: random.Random) -> Image.Image:
+    """Mid plane: the hero elements of each environment."""
+    W, H = size
+    cat = cat.lower()
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if "terraces" in cat:
+        for i in range(8):  # upper terrace bands
+            y = H * 0.36 + i * (H * 0.05)
+            shade = 30 + i * 6
+            d.polygon([(0, y), (W * 0.5, y - H * 0.025), (W, y), (W, y + H * 0.045), (0, y + H * 0.045)], fill=(66 + shade, 104 + shade, 56 + shade))
+    elif "skyline" in cat or "street" in cat:
+        for i in range(16):  # main towers
+            bx = rng.randint(0, W - 40)
+            bw = rng.randint(28, 78)
+            bh = rng.randint(80, int(H * 0.62))
+            d.rectangle([bx, H - bh, bx + bw, H], fill=(26 + i % 4 * 5, 30 + i % 3 * 6, 56))
+            if rng.random() < 0.6:
+                for _ in range(4):
+                    wx, wy = rng.randint(bx + 3, bx + bw - 8), rng.randint(int(H - bh) + 8, H - 16)
+                    d.rectangle([wx, wy, wx + 3, wy + 5], fill=(255, 210, 120, 210))
+    elif "beach" in cat:
+        d.rectangle([0, H * 0.52, W, H], fill=(30, 80, 100))
+        for i in range(6):  # wave arcs
+            y = H * 0.52 + i * 4
+            d.arc([-W * 0.3, y - 12, W * 1.3, y + 18], 200, 340, fill=(225, 242, 248), width=2)
+    elif "forest" in cat or "rainforest" in cat:
+        for i in range(12):  # tree line
+            px = rng.randint(0, W)
+            ph = rng.randint(int(H * 0.22), int(H * 0.45))
+            base_y = H * 0.66 + rng.randint(-6, 12)
+            for j, k in enumerate((0.9, 0.7, 0.5)):
+                w = ph * k * 0.8
+                d.polygon([(px - w, base_y - ph * 0.1 - j * ph * 0.28), (px + w, base_y - ph * 0.1 - j * ph * 0.28), (px, base_y - ph * 0.1 - (j + 1) * ph * 0.3)], fill=(30 + j * 10, 66 + j * 16, 36))
+        for _ in range(18):  # god-rays
+            d.line([(rng.randint(0, W), 0), (rng.randint(0, W), H)], fill=(255, 240, 200, 12), width=2)
+    elif "interior" in cat or "classroom" in cat:
+        d.rectangle([0, H * 0.6, W, H], fill=(150, 108, 66))
+        for i in range(5):  # desks
+            dx = W * 0.06 + i * W * 0.19
+            d.rounded_rectangle([dx, H * 0.68, dx + W * 0.15, H * 0.74], 4, fill=(104, 72, 44))
+        d.polygon([(W * 0.55, H * 0.30), (W * 0.95, H * 0.16), (W, H * 0.62), (W * 0.55, H * 0.62)], fill=(56, 68, 80))  # board
+    elif "space" in cat or "orbital" in cat:
+        d.ellipse([W * 0.18 - H * 0.2, H * 0.55 - H * 0.2, W * 0.18 + H * 0.2, H * 0.55 + H * 0.2], fill=(150, 160, 185))
+        d.rectangle([W * 0.3, H * 0.52, W * 0.9, H * 0.56], fill=(60, 70, 90))  # station truss
+        for i in range(5):
+            d.polygon([(W * (0.32 + i * 0.12), H * 0.52), (W * (0.32 + i * 0.12) + 12, H * 0.40), (W * (0.32 + i * 0.12) + 26, H * 0.52)], fill=(70, 92, 120))
+    elif "ancient" in cat or "desert" in cat:
+        d.rectangle([0, H * 0.34, W, H], fill=(196, 158, 106))
+        for i in range(5):  # columns
+            cx = W * 0.1 + i * W * 0.2
+            d.rounded_rectangle([cx, H * 0.30, cx + W * 0.05, H * 0.82], 4, fill=(158, 114, 70))
+        d.arc([W * 0.32, H * 0.20, W * 0.68, H * 0.72], 0, 180, fill=(158, 114, 70), width=12)
+    else:  # studio
+        d.rectangle([0, H * 0.56, W, H], fill=(12, 12, 16))
+        d.ellipse([W * 0.62 - H * 0.22, H * 0.14, W * 0.62 + H * 0.22, H * 0.14 + H * 0.44], fill=(255, 240, 210, 66))
+        d.polygon([(W * 0.2, H * 0.56), (W * 0.3, H * 0.14), (W * 0.44, H * 0.14), (W * 0.34, H * 0.56)], fill=(70, 74, 86))  # backdrop panel
+    return img
+
+
+def paint_near(size: tuple[int, int], cat: str, palette: list[str], rng: random.Random) -> Image.Image:
+    """Foreground plane: dark silhouettes + DOF blur → strongest depth cue."""
+    W, H = size
+    cat = cat.lower()
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if "terraces" in cat:
+        for i in range(7):
+            y = H * 0.40 + i * (H * 0.075)
+            shade = 14 + i * 10
+            d.polygon([(0, y), (W * 0.5, y - H * 0.04), (W, y), (W, y + H * 0.06), (0, y + H * 0.06)], fill=(40 + shade, 74 + shade, 34 + shade))
+        d.polygon([(0, H * 0.86), (W * 0.5, H * 0.80), (W, H * 0.86), (W, H), (0, H)], fill=(18, 40, 20))
+    elif "skyline" in cat or "street" in cat:
+        d.polygon([(0, H * 0.78), (W * 0.12, H * 0.66), (W * 0.2, H * 0.84), (W * 0.3, H * 0.72), (W * 0.45, H * 0.9), (W * 0.62, H * 0.78), (W * 0.8, H * 0.94), (W, H * 0.82), (W, H), (0, H)], fill=(8, 9, 16))
+        for i in range(3):  # street lamps
+            lx = W * (0.12 + i * 0.36)
+            d.line([lx, H * 0.98, lx, H * 0.74], fill=(10, 12, 20), width=4)
+            d.ellipse([lx - 10, H * 0.74 - 10, lx + 10, H * 0.74 + 10], fill=(255, 210, 130, 210))
+    elif "beach" in cat:
+        d.polygon([(0, H * 0.62), (W, H * 0.70), (W, H), (0, H)], fill=(196, 168, 120))
+        tx, ty = W * 0.16, H * 0.56
+        d.line([tx, ty, tx - 5, H * 0.98], fill=(54, 38, 24), width=7)
+        for ang in range(-40, 41, 18):
+            d.arc([tx - 52, ty - 50, tx + 52, ty + 50], ang, ang + 36, fill=(38, 84, 46), width=8)
+        d.ellipse([W * 0.55, H * 0.93, W * 0.95, H * 1.02], fill=(240, 244, 246, 170))  # foam edge
+        tx2, ty2 = W * 0.8, H * 0.60
+        d.line([tx2, ty2, tx2 - 4, H * 0.98], fill=(40, 30, 20), width=6)
+        for ang in range(-30, 41, 20):
+            d.arc([tx2 - 40, ty2 - 40, tx2 + 40, ty2 + 40], ang, ang + 32, fill=(30, 70, 40), width=7)
+    elif "forest" in cat or "rainforest" in cat:
+        for _ in range(3):  # huge dim trunks framing the shot
+            px = rng.choice((rng.randint(0, W // 8), rng.randint(W * 7 // 8, W)))
+            d.rectangle([px, H * 0.2, px + rng.randint(14, 26), H], fill=(12, 16, 12))
+            d.ellipse([px - 24, H * 0.06, px + 30, H * 0.22], fill=(10, 14, 10))
+    elif "interior" in cat or "classroom" in cat:
+        d.polygon([(0, H * 0.97), (W * 0.4, H * 0.90), (W, H * 0.97), (W, H), (0, H)], fill=(84, 60, 40))
+        d.ellipse([W * 0.78 - 26, H * 0.80 - 26, W * 0.78 + 26, H * 0.80 + 26], fill=(60, 92, 60))  # plant
+        d.line([W * 0.78, H * 0.80, W * 0.78, H * 0.96], fill=(50, 40, 30), width=4)
+    elif "space" in cat or "orbital" in cat:
+        d.polygon([(0, H * 0.70), (W * 0.14, H * 0.62), (W * 0.22, H * 0.78), (W * 0.34, H * 0.58), (W * 0.44, H * 0.8), (W, H * 0.62), (W, H), (0, H)], fill=(16, 18, 28))
+        for i in range(4):  # blinking nav lights
+            nx, ny = W * (0.08 + i * 0.26), H * (0.70 + (i % 2) * 0.06)
+            d.ellipse([nx - 3, ny - 3, nx + 3, ny + 3], fill=(255, 90, 90, 220) if i % 2 else (120, 255, 255, 220))
+    elif "ancient" in cat or "desert" in cat:
+        d.polygon([(0, H * 0.76), (W * 0.16, H * 0.68), (W * 0.3, H * 0.82), (W * 0.5, H * 0.74), (W * 0.72, H * 0.86), (W * 0.9, H * 0.72), (W, H * 0.8), (W, H), (0, H)], fill=(90, 62, 32))
+    else:  # studio
+        d.rectangle([0, H * 0.88, W, H], fill=(8, 8, 10))
+        d.polygon([(0, H * 0.84), (W * 0.1, H * 0.72), (W * 0.18, H * 0.84), (W * 0.24, H * 0.78), (W, H * 0.92), (W, H), (0, H)], fill=(16, 17, 20))
+    return img.filter(ImageFilter.GaussianBlur(1.4))  # shallow DOF
+
+
+def atmosphere(size: tuple[int, int], cat: str, t: float, rng: random.Random) -> Image.Image:
+    """Per-frame drifting foreground element — fog band or dust motes."""
+    W, H = size
+    cat = cat.lower()
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    foggy = "forest" in cat or "ancient" in cat or "terraces" in cat or "interior" in cat
+    if foggy:
+        drift = (t * 6) % (W + 400) - 200
+        for i in range(3):
+            fw = W * 0.5
+            fx = drift + i * W * 0.42 - W * 0.25
+            fy = H * rng.uniform(0.55, 0.8)
+            d.ellipse([fx, fy, fx + fw, fy + H * 0.05], fill=(235, 238, 244, 26))
+    else:
+        for _ in range(rng.randint(12, 26)):  # dust motes in the light
+            mx = (rng.random() * W + t * rng.uniform(2, 9)) % W
+            my = rng.random() * H
+            r = rng.random() * 1.6 + 0.4
+            d.ellipse([mx - r, my - r, mx + r, my + r], fill=(255, 244, 220, rng.randint(18, 60)))
+    return layer.filter(ImageFilter.GaussianBlur(1.1))
+
+
+def camera_window(move: str, t: float, dur: float, W: int, H: int, rng: random.Random) -> tuple[float, float, float, float, float]:
+    """(cx, cy, zoom, rot) in canvas coords — organic, layered camera work."""
+    p = clamp(t / max(dur, 0.01), 0, 1)
+    CW, CH = W * S_CANVAS, H * S_CANVAS
+    zoom, dx, dy, rot = 0.0, 0.0, 0.0, 0.0
+    m = (move or "").lower()
+    if any(k in m for k in ("push", "dolly in", "zoom in")):
+        zoom = 0.5 * p
+    elif any(k in m for k in ("pull", "dolly out", "zoom out", "reveal")):
+        zoom = 0.5 * (1 - p)
+    elif any(k in m for k in ("pan", "sweep", "whip")):
+        dx = 0.18 * CW * (2.4 if "whip" in m else 1.0) * p
+    elif "tilt" in m:
+        dy = 0.16 * CH * p
+    elif "truck" in m:
+        dx = -0.18 * CW * p
+    elif "orbit" in m or "around" in m:
+        dx = 0.24 * CW * p
+        dy = 0.05 * CH * math.sin(p * math.pi)
+        rot = 2.4 * p
+    elif "crane" in m:
+        dy = -0.13 * CH * p
+    elif "handheld" in m or "shaky" in m:
+        zoom = 0.03 * math.sin(p * math.pi)
+        dx = (math.sin(t * 3.1) + 0.5 * math.sin(t * 7.3)) * 0.019 * CW
+        dy = (math.sin(t * 2.3 + 1.7) + 0.5 * math.sin(t * 6.1)) * 0.016 * CH
+        rot = (math.sin(t * 1.9) + math.sin(t * 4.7)) * 0.8
+    elif any(k in m for k in ("steadicam", "float", "soar", "drift", "glide")):
+        dy = 0.09 * CH * p
+        dx = 0.05 * CW * p
+        rot = 0.6 * p
+    elif any(k in m for k in ("rack", "macro")):
+        zoom = 0.10 * math.sin(p * math.pi)
+    elif "gimbal" in m:
+        dx = 0.05 * CW * p
+        rot = 1.1 * p
+    else:  # static / slider / fpv / underwater / ""
+        zoom = 0.02 * math.sin(p * math.pi * 3)
+        dx = 0.03 * CW * math.sin(p * math.pi * 2)
+        dy = 0.012 * CH * math.sin(p * math.pi * 1.3)
+    return CW / 2 + dx, CH / 2 + dy, zoom, rot, p
+
+
+def compose_2d5(
+    far: Image.Image,
+    mid: Image.Image,
+    near: Image.Image,
+    W: int,
+    H: int,
+    cam: tuple[float, float, float, float, float],
+    char_layer: Image.Image | None,
+    vfx: Image.Image | None,
+) -> Image.Image:
+    """Compose one frame from depth planes with per-plane parallax windows."""
+    cx, cy, zoom, _rot, _p = cam
+    CW, CH = W * S_CANVAS, H * S_CANVAS
+    ww, wh = W * (1 + zoom), H * (1 + zoom)
+    planes = (far, mid, near)
+    out = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+    for i, plane in enumerate(planes):
+        pf = PARALLAX[i]
+        cxi = cx + (cx - CW / 2) * pf * max(zoom, 0.0) * 1.6
+        cyi = cy + (cy - CH / 2) * pf * max(zoom, 0.0) * 1.6
+        wi = ww * (1 - (pf - 0.8) * zoom * 0.55)
+        hi = wh * (1 - (pf - 0.8) * zoom * 0.55)
+        wi = max(wi, W * 0.2)
+        hi = max(hi, H * 0.2)
+        cxi = clamp(cxi, wi / 2, CW - wi / 2)
+        cyi = clamp(cyi, hi / 2, CH - hi / 2)
+        patch = plane.crop((_int(cxi - wi / 2), _int(cyi - hi / 2), _int(cxi + wi / 2), _int(cyi + hi / 2))).resize((W, H))
+        out = Image.alpha_composite(out, patch)
+    if char_layer is not None:
+        pf = PARALLAX[1]
+        cxi = cx + (cx - CW / 2) * pf * max(zoom, 0.0) * 1.6
+        cyi = cy + (cy - CH / 2) * pf * max(zoom, 0.0) * 1.6
+        wi = ww * (1 - (pf - 0.8) * zoom * 0.55)
+        hi = wh * (1 - (pf - 0.8) * zoom * 0.55)
+        cxi = clamp(cxi, wi / 2, CW - wi / 2)
+        cyi = clamp(cyi, hi / 2, CH - hi / 2)
+        patch = char_layer.crop((_int(cxi - wi / 2), _int(cyi - hi / 2), _int(cxi + wi / 2), _int(cyi + hi / 2))).resize((W, H))
+        out = Image.alpha_composite(out, patch)
+    if vfx is not None:
+        out = Image.alpha_composite(out, vfx)
+    return out
+
+
 def paint_background(draw: ImageDraw.ImageDraw, size: tuple[int, int], cat: str, palette: list[str], rng: random.Random) -> None:
     W, H = size
     p0, p1 = palette[0], palette[1] if len(palette) > 1 else "#333340"
@@ -216,13 +526,8 @@ def grade(frame: Image.Image, style: str, rng: random.Random) -> Image.Image:
     frame = ImageEnhance.Contrast(frame).enhance(g["contrast"])
     frame = ImageEnhance.Brightness(frame).enhance(g["brightness"])
     if g["grain"] > 0:
-        noise = Image.new("RGB", frame.size, (0, 0, 0))
-        npix = noise.load()
-        for y in range(0, frame.height, 2):
-            for x in range(0, frame.width, 2):
-                v = rng.randint(-28, 28)
-                npix[x, y] = (v + 128, v + 128, v + 128)
-        noise = noise.resize(frame.size).filter(ImageFilter.GaussianBlur(0.6))
+        noise = Image.effect_noise(frame.size, 22).convert("L")
+        noise = Image.merge("RGB", (noise, noise, noise)).filter(ImageFilter.GaussianBlur(0.5))
         frame = Image.blend(frame, ImageEnhance.Brightness(noise).enhance(0.4), g["grain"] * 0.5)
     return frame
 
@@ -378,13 +683,19 @@ def render_image_clip(spec: dict, out_dir: Path | None = None) -> dict:
 
 # ----------------------------------------------------------------- render
 def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
-    """Render one clip → mp4 (+ thumbnail jpg). Returns file metadata."""
+    """Render one clip → mp4 (+ thumbnail jpg). Returns file metadata.
+
+    2.5D pipeline: the environment is painted once as three depth planes
+    (far / mid / near) and the camera animates a parallax window across them,
+    so pans, trucks and push-ins reveal real depth separation — all keyless.
+    """
+    import time as _time
+
     rng = random.Random(spec.get("seed", 7) ^ hash(spec.get("clip_id", "clip")) & 0xFFFFFFFF)
     W = int(spec.get("width", 480))
     H = int(spec.get("height", 270))
     fps = int(spec.get("fps", 18))
     dur = clamp(float(spec.get("duration_s", 3.5)), 0.8, 8.0)
-    S = 1.6
     style = spec.get("provider", "kling-3.0")
     cat = spec.get("environment_category", "generic")
     palette = spec.get("palette") or ["#2b2b33", "#4a4a55", "#f5b301"]
@@ -400,56 +711,38 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
     thumb_path = out_dir / f"{spec.get('clip_id', 'clip')}.jpg"
 
     n = int(dur * fps)
-    canvas = (int(W * S), int(H * S))
+    canvas = (int(W * S_CANVAS), int(H * S_CANVAS))
 
-    # background is static per clip → paint once, then animate the crop
-    bg = Image.new("RGB", canvas, (24, 26, 34))
-    bd = ImageDraw.Draw(bg)
-    top = hex_rgb(palette[0])
-    bottom = hex_rgb(palette[1], (51, 51, 64))
-    for y in range(canvas[1]):
-        f = y / canvas[1]
-        c = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
-        bd.line([(0, y), (canvas[0], y)], fill=c)
-    # painted environment silhouettes on top
-    env_img = Image.new("RGBA", canvas, (0, 0, 0, 0))
-    paint_background(ImageDraw.Draw(env_img), canvas, cat, palette, rng)
-    bg = Image.alpha_composite(bg.convert("RGBA"), env_img).convert("RGB")
+    # depth planes painted once (parallax done at crop time)
+    far = paint_far(canvas, cat, palette, rng)
+    mid = paint_mid(canvas, cat, palette, rng)
+    near = paint_near(canvas, cat, palette, rng)
 
     # overlays live in output space (drawn once, composited per frame)
     light_static = lighting_overlay((W, H), lighting, tod, rng)
     vig = vignette((W, H))
 
     tmp = Path(tempfile.mkdtemp(prefix="cfframes_"))
+    t0 = _time.time()
     try:
         for i in range(n):
             t = i / fps
-            box, rot = crop_box(move, t, dur, W, H, S, rng)
-            frame = bg.crop(box)
-            if rot:
-                frame = frame.rotate(-rot, resample=Image.BICUBIC, expand=True)
-                frame = frame.resize((W, H))
-            else:
-                frame = frame.resize((W, H))
-            frame = frame.convert("RGBA")
-
-            # character figure (drawn at canvas coords, then cropped by same box)
+            cam = camera_window(move, t, dur, W, H, rng)
+            char_layer = None
             if char:
-                cf = Image.new("RGBA", canvas, (0, 0, 0, 0))
+                char_layer = Image.new("RGBA", canvas, (0, 0, 0, 0))
                 pos = char.get("position", "center")
                 fcx = {"left third": 0.26, "center": 0.5, "right third": 0.74}.get(pos, 0.5) * canvas[0]
                 fcy = canvas[1] * 0.42
                 scale = 1.35 * (1 + 0.12 * (t / dur) if "toward" in char.get("action", "") else 1)
-                draw_character(ImageDraw.Draw(cf), fcx, fcy, scale, char.get("palette", palette), t)
-                # apply camera crop to the character layer too
-                cf_crop = cf.crop(box)
-                if rot:
-                    cf_crop = cf_crop.rotate(-rot, resample=Image.BICUBIC, expand=True).resize((W, H))
-                else:
-                    cf_crop = cf_crop.resize((W, H))
-                frame = Image.alpha_composite(frame, cf_crop)
+                draw_character(ImageDraw.Draw(char_layer), fcx, fcy, scale, char.get("palette", palette), t)
+            vfx = atmosphere((W, H), cat, t, rng)
+            frame: Image.Image = compose_2d5(far, mid, near, W, H, cam, char_layer, vfx)
+            _, _, _, rot, _ = cam
+            if rot:
+                frame = frame.rotate(-rot, resample=Image.BICUBIC, expand=True)
+                frame = frame.resize((W, H))
 
-            # lighting + mood tint + vignette
             frame = Image.alpha_composite(frame, light_static)
             tint = MOOD_TINTS.get(mood)
             if tint:
@@ -481,5 +774,11 @@ def render_clip(spec: dict, out_dir: Path | None = None) -> dict:
         "width": W, "height": H,
         "fps": fps,
         "style": style,
-        "provider_meta": {"source": "procedural", "grade": STYLE_GRADES.get(style, STYLE_GRADES["kling-3.0"])["grade"]},
+        "provider_meta": {
+            "source": "procedural-2.5d",
+            "grade": STYLE_GRADES.get(style, STYLE_GRADES["kling-3.0"])["grade"],
+            "parallax": list(PARALLAX),
+            "movement": move,
+            "rendered_in_s": round(_time.time() - t0, 1),
+        },
     }
