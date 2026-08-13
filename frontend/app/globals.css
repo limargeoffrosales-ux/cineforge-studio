@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #08080b;
+  color: #e7e7ea;
+  font-feature-settings: "cv02", "cv03", "cv04";
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #26262f; border-radius: 8px; border: 2px solid #0d0d12; }
+::-webkit-scrollbar-thumb:hover { background: #34343f; }
+
+@layer components {
+  .glass {
+    @apply border border-white/8 bg-ink-900/70 backdrop-blur-md;
+  }
+  .card {
+    @apply rounded-2xl border border-white/8 bg-ink-900/80;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[11px] font-medium text-zinc-300;
+  }
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-wider text-zinc-500;
+  }
+  .input {
+    @apply w-full rounded-xl border border-white/10 bg-ink-850 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition focus:border-gold-400/60 focus:ring-2 focus:ring-gold-400/20;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-gold-400 text-ink-950 hover:bg-gold-500 shadow-[0_0_24px_-6px_rgba(245,179,1,0.55)];
+  }
+  .btn-ghost {
+    @apply btn border border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10;
+  }
+  .btn-danger {
+    @apply btn border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20;
+  }
+  .skeleton {
+    @apply animate-pulse rounded-lg bg-white/6;
+  }
+}
+
+.text-gradient-gold {
+  background: linear-gradient(100deg, #f5b301 10%, #ffd968 45%, #b98a00 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.grid-noise {
+  background-image: radial-gradient(rgba(255,255,255,0.035) 1px, transparent 1px);
+  background-size: 22px 22px;
+}

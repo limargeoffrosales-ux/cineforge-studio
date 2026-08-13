@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/backend.Dockerfile
+    environment:
+      - DATABASE_URL=sqlite:////data/cineforge.db
+      - MEDIA_DIR=/data/media
+      - JWT_SECRET=${JWT_SECRET:?set a strong JWT_SECRET in .env}
+      - TOKEN_EXPIRE_MINUTES=${TOKEN_EXPIRE_MINUTES:-1440}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - TTS_PROVIDER=${TTS_PROVIDER:-edge}
+      - PIPELINE_STAGE_SECONDS=${PIPELINE_STAGE_SECONDS:-0.7}
+      - PIPELINE_FAST=${PIPELINE_FAST:-true}
+    volumes:
+      - cineforge_data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/frontend.Dockerfile
+    environment:
+      - BACKEND_URL=http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Optional HTTPS reverse proxy (auto-TLS): docker compose --profile proxy up -d
+  # REQUIRES CINEFORGE_DOMAIN=your.domain in .env (Caddy rejects empty site addresses).
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["proxy"]
+    depends_on:
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - CINEFORGE_DOMAIN=${CINEFORGE_DOMAIN:?set CINEFORGE_DOMAIN in .env to use the proxy profile}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  # Optional production-ish infra: docker compose --profile infra up -d
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["infra"]
+    environment:
+      POSTGRES_USER: cineforge
+      POSTGRES_PASSWORD: cineforge
+      POSTGRES_DB: cineforge
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["infra"]
+    ports:
+      - "6379:6379"
+
+volumes:
+  cineforge_data:
+  caddy_data:
+  caddy_config:
+  pg_data:

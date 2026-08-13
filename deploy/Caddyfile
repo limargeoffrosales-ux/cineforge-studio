@@ -1,0 +1,9 @@
+# CineForge AI Studio — optional HTTPS reverse proxy (Caddy 2, auto-TLS).
+# Profile: docker compose --profile proxy up -d
+# REQUIRES CINEFORGE_DOMAIN=your.domain in .env — Caddy rejects an empty
+# site address, so the proxy profile refuses to start without it.
+
+{$CINEFORGE_DOMAIN} {
+	encode gzip zstd
+	reverse_proxy frontend:3000
+}

@@ -1,0 +1,12 @@
+node_modules
+.next
+.venv
+media
+__pycache__
+*.pyc
+*.db
+.git
+docs
+deploy
+*.tar.gz
+backend/tests/__pycache__
